@@ -61,7 +61,7 @@ mqtt_topics:
   read_reply: "read-reply/{productSN}/{deviceSN}"
   
   # 单点写入主题
-  write: "write/{deviceSN}"
+  write: "write/{productSN}/{deviceSN}"
   
   # 单点写入回复主题
   write_reply: "write-reply/{productSN}/{deviceSN}"

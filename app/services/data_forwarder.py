@@ -241,7 +241,7 @@ class DataForwarder:
             filtered_data = self._apply_filters(all_data)
             logger.debug(f"过滤后剩余 {len(filtered_data)} 条数据")
             
-            return filtered_data[:config_loader.get_config('data_report.batch_size', 50)]
+            return filtered_data
             
         except Exception as e:
             logger.error(f"从Redis获取数据失败: {e}")
@@ -343,12 +343,25 @@ class DataForwarder:
                 group_key = f"{key_info['service']}:{key_info['channel']}:{key_info['data_type']}"
                 grouped_data[group_key].append(item)
             
-            # 分别发送每组数据
+            # 获取批量大小配置
+            batch_size = config_loader.get_config('data_report.batch_size', 50)
+            
+            # 处理每个分组
             for group_key, group_items in grouped_data.items():
-                await self._send_property_data(group_items, group_key)
-                
+                # 如果分组内的点位超过批量大小，需要分割
+                if len(group_items) > batch_size:
+                    # 分割成多个批次
+                    for i in range(0, len(group_items), batch_size):
+                        batch_items = group_items[i:i + batch_size]
+                        await self._send_property_data(batch_items, group_key)
+                        logger.info(f"分组 {group_key} 分割发送第 {i//batch_size + 1} 批，包含 {len(batch_items)} 个点位")
+                else:
+                    # 直接发送整个分组
+                    await self._send_property_data(group_items, group_key)
+                    logger.info(f"分组 {group_key} 发送完成，包含 {len(group_items)} 个点位")
+                    
         except Exception as e:
-            logger.error(f"发送分组数据失败: {e}")
+            logger.error(f"分组发送数据失败: {e}")
     
     async def _send_property_data(self, data: List[Dict], group_key: str):
         """发送点位数据上报"""
