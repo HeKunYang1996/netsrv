@@ -86,7 +86,7 @@ class PointReader:
     
     def _validate_read_request(self, request_data: Dict[str, Any]) -> bool:
         """验证读取请求格式"""
-        required_fields = ['point', 'data_type', 'key', 'msgId']
+        required_fields = ['source', 'device', 'data_type', 'key', 'msgId']
         
         for field in required_fields:
             if field not in request_data:
@@ -98,32 +98,33 @@ class PointReader:
     async def _process_read_request(self, request_data: Dict[str, Any]):
         """处理读取请求"""
         try:
-            point = request_data['point']
+            source = request_data['source']
+            device = request_data['device']
             data_type = request_data['data_type']
             key = request_data['key']
             msg_id = request_data['msgId']
             
-            logger.info(f"处理单点读取: point={point}, data_type={data_type}, key={key}")
+            logger.info(f"处理单点读取: source={source}, device={device}, data_type={data_type}, key={key}")
             
             # 从Redis获取数据
-            redis_data = await self._get_redis_data(point, key)
+            redis_data = await self._get_redis_data(source, device, data_type, key)
             
             if redis_data is not None:
                 # 构建回复消息
-                reply_message = self._build_reply_message(point, data_type, key, redis_data, msg_id)
+                reply_message = self._build_reply_message(source, device, data_type, key, redis_data, msg_id)
                 
                 # 发送回复
                 if mqtt_client.publish(self.reply_topic, reply_message, qos=1):
-                    logger.info(f"单点读取回复发送成功: {point}:{key}")
+                    logger.info(f"单点读取回复发送成功: {source}:{device}:{key}")
                 else:
-                    logger.error(f"单点读取回复发送失败: {point}:{key}")
+                    logger.error(f"单点读取回复发送失败: {source}:{device}:{key}")
             else:
-                logger.warning(f"Redis中未找到数据: {point}:{key}")
+                logger.warning(f"Redis中未找到数据: {source}:{device}:{key}")
                 
         except Exception as e:
             logger.error(f"处理单点读取请求异常: {e}")
     
-    async def _get_redis_data(self, point: str, key: str) -> Optional[Any]:
+    async def _get_redis_data(self, source: str, device: str, data_type: str, key: str) -> Optional[Any]:
         """从Redis获取数据"""
         try:
             redis_client = redis_manager.get_client()
@@ -131,56 +132,57 @@ class PointReader:
                 logger.warning("Redis连接不可用")
                 return None
             
-            # 构建Redis键
-            # point格式: comsrv_1, 需要转换为 comsrv:1
-            service_channel = point.replace('_', ':')
+            # 将device字段的下划线转换为空格，构建Redis键
+            # 例如: Diesel_Generator1 -> Diesel Generator1
+            device_with_spaces = device.replace('_', ' ')
             
-            # 根据数据类型构建完整的Redis键
-            # 例如: comsrv:1:T, comsrv:1:S 等
-            data_types = ['T', 'S', 'C', 'A']  # 遥测、遥信、遥控、遥调
+            # 构建Redis键: source:device:data_type
+            # 例如: modsrv:Diesel Generator1:T
+            redis_key = f"{source}:{device_with_spaces}:{data_type}"
             
-            for data_type in data_types:
-                redis_key = f"{service_channel}:{data_type}"
+            logger.debug(f"查找Redis键: {redis_key}")
+            
+            # 检查键是否存在
+            if redis_client.exists(redis_key):
+                # 获取键的类型
+                key_type = redis_client.type(redis_key)
                 
-                # 检查键是否存在
-                if redis_client.exists(redis_key):
-                    # 获取键的类型
-                    key_type = redis_client.type(redis_key)
-                    
-                    if key_type == 'hash':
-                        # 如果是hash类型，获取指定key的值
-                        value = redis_client.hget(redis_key, key)
-                        if value is not None:
-                            # 转换数字字符串
-                            try:
-                                float_value = float(value)
-                                if float_value.is_integer():
-                                    return {key: int(float_value)}
-                                else:
-                                    return {key: float_value}
-                            except (ValueError, TypeError):
-                                return {key: value}
-                    
-                    elif key_type == 'string':
-                        # 如果是string类型，直接返回
-                        value = redis_client.get(redis_key)
+                if key_type == 'hash':
+                    # 如果是hash类型，获取指定key的值
+                    value = redis_client.hget(redis_key, key)
+                    if value is not None:
+                        # 转换数字字符串
+                        try:
+                            float_value = float(value)
+                            if float_value.is_integer():
+                                return {key: int(float_value)}
+                            else:
+                                return {key: float_value}
+                        except (ValueError, TypeError):
+                            return {key: value}
+                
+                elif key_type == 'string':
+                    # 如果是string类型，直接返回
+                    value = redis_client.get(redis_key)
+                    if value is not None:
+                        return {key: value}
+                
+                elif key_type == 'list':
+                    # 如果是list类型，获取指定索引的值
+                    try:
+                        index = int(key)
+                        value = redis_client.lindex(redis_key, index)
                         if value is not None:
                             return {key: value}
-                    
-                    elif key_type == 'list':
-                        # 如果是list类型，获取指定索引的值
-                        try:
-                            index = int(key)
-                            value = redis_client.lindex(redis_key, index)
-                            if value is not None:
-                                return {key: value}
-                        except (ValueError, IndexError):
-                            pass
-                    
-                    elif key_type == 'set':
-                        # 如果是set类型，检查成员是否存在
-                        if redis_client.sismember(redis_key, key):
-                            return {key: "exists"}
+                    except (ValueError, IndexError):
+                        pass
+                
+                elif key_type == 'set':
+                    # 如果是set类型，检查成员是否存在
+                    if redis_client.sismember(redis_key, key):
+                        return {key: "exists"}
+            else:
+                logger.debug(f"Redis键不存在: {redis_key}")
             
             return None
             
@@ -188,7 +190,7 @@ class PointReader:
             logger.error(f"从Redis获取数据失败: {e}")
             return None
     
-    def _build_reply_message(self, point: str, data_type: str, key: str, 
+    def _build_reply_message(self, source: str, device: str, data_type: str, key: str, 
                            value: Any, msg_id: str) -> Dict[str, Any]:
         """构建回复消息"""
         current_timestamp = int(time.time())
@@ -197,7 +199,8 @@ class PointReader:
             "timestamp": current_timestamp,
             "property": [
                 {
-                    "point": point,
+                    "source": source,
+                    "device": device,
                     "data_type": data_type,
                     "value": value
                 }

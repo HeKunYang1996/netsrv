@@ -377,8 +377,9 @@ class DataForwarder:
             for item in data:
                 key_info = self._parse_key_format(item['key'])
                 
-                # 构建点位标识 (格式: comsrv_1)
-                point_id = f"{key_info['service']}_{key_info['channel']}"
+                # 构建source和device字段
+                source = key_info['service']  # 服务名 (comsrv, modsrv)
+                device = key_info['channel'].replace(' ', '_')  # 通道ID，空格转换为下划线
                 
                 # 处理不同类型的值
                 if isinstance(item['value'], dict):
@@ -389,7 +390,8 @@ class DataForwarder:
                     converted_value = item['value']
                 
                 point_data = {
-                    "point": point_id,
+                    "source": source,
+                    "device": device,
                     "data_type": key_info['data_type'],
                     "value": converted_value
                 }

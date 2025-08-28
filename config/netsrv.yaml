@@ -10,7 +10,7 @@ service:
 # 设备标识配置
 device_identity:
   # 产品序列号 - 在配置文件中设置
-  product_sn: "monarch"
+  product_sn: "MonarchHub"
   
   # 设备序列号 - 自动从 /proc/device-tree/serial-number 读取
   # 开发环境如果文件不存在，使用固定值
@@ -97,22 +97,14 @@ data_report:
   # 批量上报数量
   batch_size: 50
   
-  # 数据格式配置
-  format:
-    timestamp_format: "ISO8601"
-    include_metadata: true
-  
-  # 数据格式说明
-  # 数据键格式: A:B:C
-  # A: 服务名 (comsrv, modsrv)
-  # B: 通道ID (1, 1001等)
-  # C: 数据类型 (T-遥测, S-遥信, C-遥控, A-遥调)
-  
-  # 点位标识格式: {service}_{channel}
+  # MQTT报文格式说明
+  # 新格式使用 source 和 device 字段替代原来的 point 字段
+  # source: 服务名 (comsrv, modsrv)
+  # device: 通道ID，支持空格，如 "Diesel Generator1"
+  # data_type: 数据类型，支持自定义类型，不限制为 T/S/C/A
   # 示例:
-  # comsrv:1:S -> point: "comsrv_1"
-  # comsrv:1001:T -> point: "comsrv_1001"
-  # modsrv:2001:C -> point: "modsrv_2001"
+  # comsrv:1:T -> source: "comsrv", device: "1", data_type: "T"
+  # modsrv:Diesel Generator1:M -> source: "modsrv", device: "Diesel_Generator1", data_type: "M"
 
 # 设备上线/下线配置
 device_status:
