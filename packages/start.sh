@@ -50,8 +50,7 @@ else
         # 按版本号排序，选择最新的
         IMAGE_NAME=$(echo "$VERSIONED_IMAGES" | sort -V -r | head -1)
         echo "✅ 使用最新版本: $IMAGE_NAME"
-    fi
-else
+    else
         # 选择第一个可用的镜像
         IMAGE_NAME=$(echo "$AVAILABLE_IMAGES" | head -1)
         echo "✅ 使用可用镜像: $IMAGE_NAME"
@@ -68,6 +67,19 @@ echo "📁 创建配置目录..."
 mkdir -p /extp/config
 mkdir -p /extp/logs
 
+# 读取宿主机设备序列号
+echo "🔍 读取设备序列号..."
+DEVICE_SN=""
+if [ -f "/proc/device-tree/serial-number" ]; then
+    DEVICE_SN=$(cat /proc/device-tree/serial-number 2>/dev/null | tr -d '\0' | tr -d '\n')
+    echo "✅ 从设备树读取序列号: $DEVICE_SN"
+elif [ -f "/sys/class/dmi/id/product_serial" ]; then
+    DEVICE_SN=$(cat /sys/class/dmi/id/product_serial 2>/dev/null | tr -d '\n')
+    echo "✅ 从DMI读取序列号: $DEVICE_SN"
+else
+    echo "⚠️  无法读取设备序列号，将使用容器ID生成"
+fi
+
 # 启动服务（使用host网络模式）
 echo "🚀 启动网络服务..."
 echo "🏷️  使用镜像: $IMAGE_NAME"
@@ -83,6 +95,7 @@ docker run -d \
     -e REDIS_PREFIX=netsrv: \
     -e DEBUG=false \
     -e LOG_LEVEL=INFO \
+    -e DEVICE_SN="$DEVICE_SN" \
     "$IMAGE_NAME"
 
 # 等待服务启动
@@ -92,10 +105,10 @@ sleep 10
 # 检查服务状态（重试机制）
 echo "🔍 检查服务状态..."
 for i in {1..6}; do
-    if curl -f -s http://localhost:6006/health > /dev/null 2>&1; then
+    if curl -f -s http://localhost:6006/netApi/health > /dev/null 2>&1; then
         echo "✅ 网络服务启动成功！"
         echo "📱 服务地址: http://localhost:6006"
-        echo "📊 健康检查: http://localhost:6006/health"
+        echo "📊 健康检查: http://localhost:6006/netApi/health"
         echo "📖 API文档: http://localhost:6006/docs"
         break
     else

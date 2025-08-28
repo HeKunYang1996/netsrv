@@ -135,7 +135,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 # 包含路由
-app.include_router(router, prefix="/api")
+app.include_router(router)
 
 def signal_handler(signum, frame):
     """信号处理器"""

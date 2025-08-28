@@ -11,7 +11,18 @@ from app.core.database import redis_manager
 from app.core.mqtt_client import mqtt_client
 from app.core.config import settings
 
-router = APIRouter(prefix="/api/v1", tags=["网络服务"])
+router = APIRouter(prefix="/netApi", tags=["网络服务"])
+
+# 添加根路径健康检查，兼容start.sh脚本
+@router.get("/", include_in_schema=False)
+async def root_health_check():
+    """根路径健康检查接口（兼容start.sh脚本）"""
+    return {
+        "status": "healthy",
+        "service": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "message": "网络服务运行正常"
+    }
 
 @router.get("/health")
 async def health_check():

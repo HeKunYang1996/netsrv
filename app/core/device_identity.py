@@ -52,36 +52,48 @@ class DeviceIdentityManager:
     def _read_device_serial_number(self) -> str:
         """读取设备序列号"""
         try:
-            # 尝试从 /proc/device-tree/serial-number 读取
-            serial_path = Path("/proc/device-tree/serial-number")
-            if serial_path.exists():
-                with open(serial_path, 'r') as f:
-                    serial = f.read().strip()
-                    if serial:
-                        logger.info(f"从设备树读取到序列号: {serial}")
-                        return serial
+            # 尝试从配置文件读取
+            config_device_sn = config_loader.get_device_identity_config().get('device_sn', '')
+            if config_device_sn and config_device_sn != 'auto':
+                logger.info(f"从配置文件读取设备序列号: {config_device_sn}")
+                return config_device_sn
             
-            # 尝试从 /sys/class/dmi/id/product_serial 读取
-            dmi_path = Path("/sys/class/dmi/id/product_serial")
-            if dmi_path.exists():
-                with open(dmi_path, 'r') as f:
-                    serial = f.read().strip()
-                    if serial:
-                        logger.info(f"从DMI读取到序列号: {serial}")
-                        return serial
+            # 尝试从设备树读取
+            device_tree_path = "/proc/device-tree/serial-number"
+            if os.path.exists(device_tree_path):
+                with open(device_tree_path, 'r') as f:
+                    device_sn = f.read().strip()
+                    if device_sn:
+                        logger.info(f"从设备树读取设备序列号: {device_sn}")
+                        return device_sn
             
             # 尝试从环境变量读取
-            env_serial = os.environ.get('DEVICE_SERIAL_NUMBER')
-            if env_serial:
-                logger.info(f"从环境变量读取到序列号: {env_serial}")
-                return env_serial
+            env_device_sn = os.environ.get('DEVICE_SN', '')
+            if env_device_sn:
+                logger.info(f"从环境变量读取设备序列号: {env_device_sn}")
+                return env_device_sn
             
-            # 开发环境使用固定值
+            # 尝试从Docker容器ID生成
+            if os.path.exists('/proc/self/cgroup'):
+                try:
+                    with open('/proc/self/cgroup', 'r') as f:
+                        for line in f:
+                            if 'docker' in line:
+                                # 提取容器ID的最后12位作为设备序列号
+                                container_id = line.strip().split('/')[-1]
+                                if len(container_id) >= 12:
+                                    device_sn = f"container_{container_id[-12:]}"
+                                    logger.info(f"从容器ID生成设备序列号: {device_sn}")
+                                    return device_sn
+                except Exception as e:
+                    logger.debug(f"读取容器ID失败: {e}")
+            
+            # 使用开发环境固定值
             logger.warning("无法读取设备序列号，使用开发环境固定值")
             return "dev_001"
             
         except Exception as e:
-            logger.error(f"读取设备序列号失败: {e}")
+            logger.error(f"读取设备序列号异常: {e}")
             return "dev_001"
     
     def get_product_sn(self) -> str:
