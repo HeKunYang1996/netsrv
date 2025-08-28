@@ -8,6 +8,7 @@ from typing import Optional, Callable, Dict, Any
 from loguru import logger
 import paho.mqtt.client as mqtt
 from .config import settings
+from .config_loader import config_loader
 
 class MQTTClient:
     """MQTT客户端管理器"""
@@ -16,14 +17,23 @@ class MQTTClient:
         self.client: Optional[mqtt.Client] = None
         self.is_connected = False
         self.message_handlers: Dict[str, Callable] = {}
+        self.mqtt_config = {}
         self._setup_client()
     
     def _setup_client(self):
         """设置MQTT客户端"""
         try:
+            # 获取MQTT连接配置
+            self.mqtt_config = config_loader.get_mqtt_connection_config()
+            broker_config = self.mqtt_config.get('broker', {})
+            
+            if not broker_config:
+                logger.error("未找到MQTT连接配置")
+                return
+            
             self.client = mqtt.Client(
-                client_id=settings.MQTT_CLIENT_ID,
-                clean_session=True,
+                client_id=broker_config.get('client_id', 'netsrv_client'),
+                clean_session=broker_config.get('clean_session', True),
                 protocol=mqtt.MQTTv311
             )
             
@@ -34,12 +44,33 @@ class MQTTClient:
             self.client.on_publish = self._on_publish
             
             # 设置认证
-            if settings.MQTT_USERNAME and settings.MQTT_PASSWORD:
-                self.client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
+            username = broker_config.get('username', '')
+            password = broker_config.get('password', '')
+            if username and password:
+                self.client.username_pw_set(username, password)
             
             # 设置SSL
-            if settings.MQTT_SSL_ENABLED:
-                self.client.tls_set()
+            ssl_config = broker_config.get('ssl', {})
+            if ssl_config.get('enabled', False):
+                ca_cert = ssl_config.get('ca_cert')
+                client_cert = ssl_config.get('client_cert')
+                client_key = ssl_config.get('client_key')
+                
+                if ca_cert and client_cert and client_key:
+                    # 使用证书文件进行双向认证（AWS IoT推荐）
+                    self.client.tls_set(
+                        ca_certs=ca_cert,
+                        certfile=client_cert,
+                        keyfile=client_key,
+                        cert_reqs=mqtt.ssl.CERT_REQUIRED,
+                        tls_version=mqtt.ssl.PROTOCOL_TLSv1_2,
+                        ciphers=None
+                    )
+                    logger.info(f"SSL证书配置完成: CA={ca_cert}, Cert={client_cert}, Key={client_key}")
+                else:
+                    # 仅启用SSL，不验证证书（不推荐用于生产环境）
+                    self.client.tls_set()
+                    logger.warning("SSL已启用但未配置证书，连接可能不安全")
             
             logger.info("MQTT客户端设置完成")
             
@@ -52,10 +83,15 @@ class MQTTClient:
             if not self.client:
                 self._setup_client()
             
+            broker_config = self.mqtt_config.get('broker', {})
+            if not broker_config:
+                logger.error("MQTT配置未加载")
+                return False
+            
             self.client.connect(
-                settings.MQTT_BROKER_HOST,
-                settings.MQTT_BROKER_PORT,
-                keepalive=settings.MQTT_KEEPALIVE
+                broker_config.get('host', 'localhost'),
+                broker_config.get('port', 1883),
+                keepalive=broker_config.get('keepalive', 60)
             )
             
             # 启动网络循环
@@ -68,7 +104,7 @@ class MQTTClient:
                 time.sleep(0.1)
             
             if self.is_connected:
-                logger.info(f"MQTT连接成功: {settings.MQTT_BROKER_HOST}:{settings.MQTT_BROKER_PORT}")
+                logger.info(f"MQTT连接成功: {broker_config.get('host')}:{broker_config.get('port')}")
                 return True
             else:
                 logger.error("MQTT连接超时")

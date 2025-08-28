@@ -147,5 +147,51 @@ class ConfigLoader:
             'config_file': str(Path(settings.CONFIG_DIR) / self.config_file)
         }
 
+    def get_mqtt_connection_config(self) -> Dict[str, Any]:
+        """获取MQTT连接配置"""
+        mqtt_config = self.get_config('mqtt_connection', {})
+        
+        # 处理SSL证书路径，转换为绝对路径
+        if mqtt_config.get('broker', {}).get('ssl', {}).get('enabled', False):
+            ssl_config = mqtt_config['broker']['ssl']
+            
+            # 检查是否在容器环境中运行
+            if os.path.exists('/app/config') and os.path.isdir('/app/config'):
+                # 容器环境：使用绝对路径
+                config_dir = Path('/app/config')
+                logger.debug("检测到容器环境，使用绝对路径")
+            else:
+                # 本地开发环境：使用相对路径
+                config_dir = Path("config")
+                logger.debug("检测到本地开发环境，使用相对路径")
+            
+            # 转换证书路径
+            if ssl_config.get('ca_cert'):
+                ssl_config['ca_cert'] = str(config_dir / ssl_config['ca_cert'])
+            if ssl_config.get('client_cert'):
+                ssl_config['client_cert'] = str(config_dir / ssl_config['client_cert'])
+            if ssl_config.get('client_key'):
+                ssl_config['client_key'] = str(config_dir / ssl_config['client_key'])
+            
+            logger.debug(f"SSL证书路径: CA={ssl_config.get('ca_cert')}, Cert={ssl_config.get('client_cert')}, Key={ssl_config.get('client_key')}")
+        
+        return mqtt_config
+    
+    def get_mqtt_topics_config(self) -> Dict[str, Any]:
+        """获取MQTT主题配置"""
+        return self.get_config('mqtt_topics', {})
+    
+    def get_device_identity_config(self) -> Dict[str, Any]:
+        """获取设备身份配置"""
+        return self.get_config('device_identity', {})
+    
+    def get_data_report_config(self) -> Dict[str, Any]:
+        """获取数据上报配置"""
+        return self.get_config('data_report', {})
+    
+    def get_device_status_config(self) -> Dict[str, Any]:
+        """获取设备状态配置"""
+        return self.get_config('device_status', {})
+
 # 全局配置加载器实例
 config_loader = ConfigLoader()
