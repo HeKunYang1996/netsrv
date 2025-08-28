@@ -62,6 +62,8 @@ class PointReader:
             # 验证请求格式
             if not self._validate_read_request(request_data):
                 logger.warning(f"单点读取请求格式错误: {request_data}")
+                # 即使验证失败，也要发送失败回复
+                self._send_validation_failure_reply(request_data)
                 return
             
             # 处理读取请求（使用同步方式调用异步方法）
@@ -81,8 +83,12 @@ class PointReader:
             
         except json.JSONDecodeError:
             logger.error(f"单点读取请求JSON解析失败: {payload}")
+            # JSON解析失败时也要发送回复
+            self._send_json_error_reply(payload)
         except Exception as e:
             logger.error(f"处理单点读取请求异常: {e}")
+            # 其他异常时也要发送回复
+            self._send_general_error_reply(str(e))
     
     def _validate_read_request(self, request_data: Dict[str, Any]) -> bool:
         """验证读取请求格式"""
@@ -207,6 +213,64 @@ class PointReader:
             ],
             "msgId": msg_id
         }
+
+    def _send_validation_failure_reply(self, request_data: Dict[str, Any]):
+        """发送验证失败回复"""
+        try:
+            msg_id = request_data.get('msgId', 'unknown')
+            reply_message = {
+                "result": "fail",
+                "error": "validation_failed",
+                "message": "请求格式验证失败，缺少必要字段",
+                "msgId": msg_id,
+                "timestamp": int(time.time())
+            }
+            
+            if mqtt_client.publish(self.reply_topic, reply_message, qos=1):
+                logger.info(f"验证失败回复发送成功: {msg_id}")
+            else:
+                logger.error(f"验证失败回复发送失败: {msg_id}")
+                
+        except Exception as e:
+            logger.error(f"发送验证失败回复异常: {e}")
+    
+    def _send_json_error_reply(self, payload: str):
+        """发送JSON解析错误回复"""
+        try:
+            reply_message = {
+                "result": "fail",
+                "error": "json_parse_error",
+                "message": "JSON格式解析失败",
+                "msgId": "unknown",
+                "timestamp": int(time.time())
+            }
+            
+            if mqtt_client.publish(self.reply_topic, reply_message, qos=1):
+                logger.info("JSON错误回复发送成功")
+            else:
+                logger.error("JSON错误回复发送失败")
+                
+        except Exception as e:
+            logger.error(f"发送JSON错误回复异常: {e}")
+    
+    def _send_general_error_reply(self, error_message: str):
+        """发送通用错误回复"""
+        try:
+            reply_message = {
+                "result": "fail",
+                "error": "general_error",
+                "message": f"处理请求时发生错误: {error_message}",
+                "msgId": "unknown",
+                "timestamp": int(time.time())
+            }
+            
+            if mqtt_client.publish(self.reply_topic, reply_message, qos=1):
+                logger.info("通用错误回复发送成功")
+            else:
+                logger.error("通用错误回复发送失败")
+                
+        except Exception as e:
+            logger.error(f"发送通用错误回复异常: {e}")
 
 # 全局单点读取服务实例
 point_reader = PointReader()

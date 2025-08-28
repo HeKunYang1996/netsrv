@@ -19,6 +19,7 @@ from app.core.config_loader import config_loader
 from app.core.device_identity import device_identity
 from app.services.data_forwarder import data_forwarder
 from app.services.point_reader import point_reader
+from app.services.point_writer import point_writer
 from app.api.routes import router
 
 # 设置日志
@@ -59,6 +60,13 @@ async def lifespan(app: FastAPI):
             else:
                 logger.error("单点读取服务启动失败")
                 raise Exception("单点读取服务启动失败")
+            
+            # 设置单点写入主题
+            if point_writer.setup_topics():
+                logger.info("单点写入服务启动成功")
+            else:
+                logger.error("单点写入服务启动失败")
+                raise Exception("单点写入服务启动失败")
         else:
             logger.error("MQTT连接失败")
             raise Exception("MQTT连接失败")
