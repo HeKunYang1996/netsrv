@@ -13,6 +13,7 @@ from app.core.database import redis_manager
 from app.core.mqtt_client import mqtt_client
 from app.core.config_loader import config_loader
 from app.core.device_identity import device_identity
+from app.services.system_monitor import system_monitor
 
 class DataForwarder:
     """数据转发服务"""
@@ -21,7 +22,7 @@ class DataForwarder:
         self.is_running = False
         self.forward_task: Optional[asyncio.Task] = None
         self.last_forward_time = 0
-        self.device_online_sent = False
+        self.last_system_monitor_time = 0
         
     async def start(self):
         """启动数据转发服务"""
@@ -32,15 +33,11 @@ class DataForwarder:
         logger.info("启动数据转发服务...")
         self.is_running = True
         
-        # 启动MQTT连接
+        # 确保MQTT连接正常
         if not mqtt_client.is_connected:
-            if not mqtt_client.connect():
-                logger.error("MQTT连接失败，数据转发服务无法启动")
-                self.is_running = False
-                return
-        
-        # 发送设备上线消息
-        await self._send_device_online()
+            logger.info("MQTT未连接，数据转发服务将等待MQTT连接建立")
+            # 不再强制要求MQTT连接，让数据转发器可以独立启动
+            # MQTT的在线消息现在由MQTT客户端的连接回调自动处理
         
         # 启动转发任务
         self.forward_task = asyncio.create_task(self._forward_loop())
@@ -54,8 +51,8 @@ class DataForwarder:
         logger.info("停止数据转发服务...")
         self.is_running = False
         
-        # 发送设备下线消息
-        await self._send_device_offline()
+        # 发送设备下线消息（优雅停机时发送）
+        await self._send_device_offline("graceful_shutdown")
         
         if self.forward_task:
             self.forward_task.cancel()
@@ -66,35 +63,8 @@ class DataForwarder:
         
         logger.info("数据转发服务已停止")
     
-    async def _send_device_online(self):
-        """发送设备上线消息"""
-        try:
-            if self.device_online_sent:
-                return
-            
-            # 获取状态主题
-            status_topic = device_identity.format_topic(
-                config_loader.get_config('mqtt_topics.status', 'status/{productSN}/{deviceSN}')
-            )
-            
-            # 构建上线消息
-            online_message = {
-                "type": "online",
-                "gateway": "" if device_identity.is_gateway_device() else device_identity.get_device_sn()
-            }
-            
-            # 发送上线消息
-            if mqtt_client.publish(status_topic, online_message, qos=1, retain=True):
-                logger.info(f"设备上线消息发送成功: {status_topic}")
-                self.device_online_sent = True
-            else:
-                logger.error("设备上线消息发送失败")
-                
-        except Exception as e:
-            logger.error(f"发送设备上线消息失败: {e}")
-    
-    async def _send_device_offline(self):
-        """发送设备下线消息"""
+    async def _send_device_offline(self, reason: str = "graceful_shutdown"):
+        """发送设备下线消息（用于优雅停机）"""
         try:
             # 获取状态主题
             status_topic = device_identity.format_topic(
@@ -104,12 +74,23 @@ class DataForwarder:
             # 构建下线消息
             offline_message = {
                 "type": "offline",
-                "gateway": "" if device_identity.is_gateway_device() else device_identity.get_device_sn()
+                "gateway": "",
+                "reason": reason,
+                "timestamp": int(time.time())
             }
             
-            # 发送下线消息
+            # 发送下线消息（确保立即传输）
             if mqtt_client.publish(status_topic, offline_message, qos=1, retain=True):
-                logger.info(f"设备下线消息发送成功: {status_topic}")
+                logger.info(f"设备下线消息发送成功: {status_topic} (原因: {reason})")
+                # 额外强制网络处理，确保下线消息立即发送
+                try:
+                    for i in range(20):
+                        mqtt_client.client.loop_write()
+                        time.sleep(0.01)
+                    # 额外等待确保传输完成
+                    time.sleep(0.5)
+                except:
+                    pass
             else:
                 logger.error("设备下线消息发送失败")
                 
@@ -140,16 +121,83 @@ class DataForwarder:
     async def _forward_data(self):
         """执行数据转发"""
         try:
-            # 从Redis获取数据
-            data = await self._fetch_data_from_redis()
-            if not data:
+            current_time = time.time()
+            
+            # 检查MQTT连接状态
+            if not mqtt_client.is_connected:
+                logger.debug("MQTT未连接，跳过数据转发")
                 return
             
-            # 按数据类型分组并分别上送
-            await self._send_grouped_data(data)
+            # 从Redis获取数据
+            data = await self._fetch_data_from_redis()
+            if data:
+                # 按数据类型分组并分别上送
+                await self._send_grouped_data(data)
+            
+            # 检查是否需要发送系统监控数据
+            await self._check_and_send_system_monitor_data(current_time)
             
         except Exception as e:
             logger.error(f"数据转发异常: {e}")
+    
+    async def _check_and_send_system_monitor_data(self, current_time: float):
+        """检查并发送系统监控数据"""
+        try:
+            # 获取系统监控配置
+            monitor_config = config_loader.get_system_monitor_config()
+            
+            if not monitor_config.get('enabled', False):
+                return
+            
+            # 检查收集间隔
+            collect_interval = monitor_config.get('collect_interval', 10)
+            if current_time - self.last_system_monitor_time < collect_interval:
+                return
+            
+            # 收集系统监控数据
+            system_data = system_monitor.get_system_data()
+            if not system_data:
+                logger.warning("系统监控数据收集失败")
+                return
+            
+            # 获取设备序列号
+            device_sn = device_identity.get_device_sn()
+            
+            # 格式化为MQTT格式
+            mqtt_message = system_monitor.format_for_mqtt(system_data, device_sn)
+            
+            if mqtt_message:
+                # 发送系统监控数据
+                await self._send_system_monitor_data(mqtt_message)
+                self.last_system_monitor_time = current_time
+                
+        except Exception as e:
+            logger.error(f"发送系统监控数据异常: {e}")
+    
+    async def _send_system_monitor_data(self, message: Dict[str, Any]):
+        """发送系统监控数据"""
+        try:
+            # 获取属性主题
+            property_topic = device_identity.format_topic(
+                config_loader.get_config('mqtt_topics.property', 'property/{productSN}/{deviceSN}')
+            )
+            
+            # 发送数据
+            if mqtt_client.publish(property_topic, message, qos=1):
+                logger.info(f"系统监控数据上报成功: {property_topic}")
+                logger.debug(f"系统监控数据内容: {json.dumps(message, indent=2)}")
+                # 额外强制网络处理（在publish中已经处理了一次）
+                try:
+                    for i in range(3):
+                        mqtt_client.client.loop_write()
+                        time.sleep(0.005)
+                except:
+                    pass
+            else:
+                logger.warning("系统监控数据上报失败")
+                
+        except Exception as e:
+            logger.error(f"发送系统监控数据失败: {e}")
     
     async def _fetch_data_from_redis(self) -> Optional[List[Dict]]:
         """从Redis获取数据"""
@@ -408,6 +456,13 @@ class DataForwarder:
                 # 发送数据
                 if mqtt_client.publish(property_topic, message, qos=1):
                     logger.debug(f"点位数据上报成功: {property_topic}, 组: {group_key}, 数据量: {len(property_data)}")
+                    # 额外强制网络处理（在publish中已经处理了一次）
+                    try:
+                        for i in range(3):
+                            mqtt_client.client.loop_write()
+                            time.sleep(0.005)
+                    except:
+                        pass
                 else:
                     logger.warning(f"点位数据上报失败: {group_key}")
             

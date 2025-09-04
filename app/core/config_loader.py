@@ -175,6 +175,15 @@ class ConfigLoader:
             
             logger.debug(f"SSL证书路径: CA={ssl_config.get('ca_cert')}, Cert={ssl_config.get('client_cert')}, Key={ssl_config.get('client_key')}")
         
+        # 配置重连参数
+        reconnect_config = mqtt_config.get('broker', {}).get('reconnect', {})
+        if reconnect_config.get('enabled', True):
+            mqtt_config['reconnect_enabled'] = True
+            mqtt_config['reconnect_delay'] = reconnect_config.get('delay', 5)
+            mqtt_config['max_reconnect_attempts'] = reconnect_config.get('max_attempts', 10)
+        else:
+            mqtt_config['reconnect_enabled'] = False
+        
         return mqtt_config
     
     def get_mqtt_topics_config(self) -> Dict[str, Any]:
@@ -192,6 +201,10 @@ class ConfigLoader:
     def get_device_status_config(self) -> Dict[str, Any]:
         """获取设备状态配置"""
         return self.get_config('device_status', {})
+    
+    def get_system_monitor_config(self) -> Dict[str, Any]:
+        """获取系统监控配置"""
+        return self.get_config('system_monitor', {})
 
 # 全局配置加载器实例
 config_loader = ConfigLoader()

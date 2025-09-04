@@ -26,25 +26,32 @@ device_identity:
 mqtt_connection:
   # MQTT代理配置
   broker:
-    host: "192.168.30.62"
-    port: 1883
-    username: ""
-    password: ""
-    client_id: "netsrv_client"
-    keepalive: 60
+    host: "192.168.40.39"  # 替换为您的AWS IoT端点
+    port: 1883  # AWS IoT默认端口
+    username: ""  # AWS IoT通常不需要用户名
+    password: ""  # AWS IoT通常不需要密码
+    client_id: "netsrv_dev_client"  # 建议使用唯一标识
+    keepalive: 300  # AWS IoT建议使用较长的keepalive
     
     # SSL配置
     ssl:
-      enabled: false  # 生产环境建议开启
-      ca_cert: ""
-      client_cert: ""
-      client_key: ""
+      enabled: false  # AWS IoT必须启用SSL
+      ca_cert: "aws_cert/AmazonRootCA1.pem"           # AWS根证书
+      client_cert: "aws_cert/certificate.pem.crt"     # 设备证书
+      client_key: "aws_cert/private.pem.key"          # 私钥文件
     
     # 连接重试设置
     reconnect:
       enabled: true
       max_attempts: 10
       delay: 5  # 秒
+      
+    # 在线离线消息设置
+    status:
+      # 遗嘱消息设置（网络意外断开时自动发送）
+      will_message_enabled: true
+      # 连接成功后自动发送在线消息
+      auto_online_message: true
 
 # MQTT主题配置（按照文档格式）
 mqtt_topics:
@@ -96,6 +103,28 @@ data_report:
   
   # 批量上报数量
   batch_size: 50
+
+# 系统监控配置
+system_monitor:
+  # 是否启用系统监控数据收集
+  enabled: true
+  
+  # 监控数据收集间隔（秒）
+  collect_interval: 10
+  
+  # 监控项配置
+  metrics:
+    cpu_enabled: true           # CPU使用率
+    memory_enabled: true        # 内存使用率
+    disk_enabled: true          # 磁盘使用率
+    network_enabled: true       # 网络流量统计
+    temperature_enabled: true   # 温度监控（如果可用）
+    load_enabled: true          # 系统负载（Linux）
+  
+  # 数据格式配置
+  format:
+    source: "gateway"           # 固定值
+    data_type: "T"             # 固定值
   
   # MQTT报文格式说明
   # 新格式使用 source 和 device 字段替代原来的 point 字段
