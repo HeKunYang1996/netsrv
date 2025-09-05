@@ -58,15 +58,8 @@ class AlarmBroadcaster:
                 logger.error(f"告警数据格式错误，必须是字典格式: {type(alarm_data)}")
                 return False
             
-            # 添加时间戳（如果没有的话）
-            if 'timestamp' not in alarm_data:
-                alarm_data['timestamp'] = int(time.time())
-            
-            # 添加消息类型标识（如果没有的话）
-            if 'type' not in alarm_data:
-                alarm_data['type'] = 'alarm'
-            
             # 发布告警消息（使用QoS 1确保消息传输）
+            # 注意：直接转发原始数据，不做任何修改
             success = mqtt_client.publish(
                 topic=self.formatted_alarm_topic,
                 payload=alarm_data,
