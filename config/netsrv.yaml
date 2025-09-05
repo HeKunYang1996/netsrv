@@ -31,7 +31,7 @@ mqtt_connection:
     username: ""  # AWS IoT通常不需要用户名
     password: ""  # AWS IoT通常不需要密码
     client_id: "netsrv_dev_client"  # 建议使用唯一标识
-    keepalive: 300  # AWS IoT建议使用较长的keepalive
+    keepalive: 30  # AWS IoT建议使用较长的keepalive
     
     # SSL配置
     ssl:
@@ -81,6 +81,9 @@ mqtt_topics:
   
   # 设备数据总招主题
   call_data: "call-data"
+  
+  # 告警广播主题
+  alarm: "alarm/{productSN}/{deviceSN}"
 
 # Redis数据源配置
 redis_source:
