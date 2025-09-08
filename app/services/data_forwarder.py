@@ -23,6 +23,10 @@ class DataForwarder:
         self.forward_task: Optional[asyncio.Task] = None
         self.last_forward_time = 0
         self.last_system_monitor_time = 0
+        # 添加MQTT发送失败计数器和延迟控制
+        self.mqtt_failure_count = 0
+        self.last_failure_time = 0
+        self.failure_delay_base = 1  # 基础延迟时间（秒）
         
     async def start(self):
         """启动数据转发服务"""
@@ -184,6 +188,8 @@ class DataForwarder:
             
             # 发送数据
             if mqtt_client.publish(property_topic, message, qos=1):
+                # 发送成功，重置失败计数器
+                self._reset_mqtt_failure_count()
                 logger.info(f"系统监控数据上报成功: {property_topic}")
                 logger.debug(f"系统监控数据内容: {json.dumps(message, indent=2)}")
                 # 额外强制网络处理（在publish中已经处理了一次）
@@ -194,7 +200,8 @@ class DataForwarder:
                 except:
                     pass
             else:
-                logger.warning("系统监控数据上报失败")
+                # 处理MQTT发送失败
+                await self._handle_mqtt_failure("系统监控数据上报失败")
                 
         except Exception as e:
             logger.error(f"发送系统监控数据失败: {e}")
@@ -455,6 +462,8 @@ class DataForwarder:
                 
                 # 发送数据
                 if mqtt_client.publish(property_topic, message, qos=1):
+                    # 发送成功，重置失败计数器
+                    self._reset_mqtt_failure_count()
                     logger.debug(f"点位数据上报成功: {property_topic}, 组: {group_key}, 数据量: {len(property_data)}")
                     # 额外强制网络处理（在publish中已经处理了一次）
                     try:
@@ -464,10 +473,43 @@ class DataForwarder:
                     except:
                         pass
                 else:
-                    logger.warning(f"点位数据上报失败: {group_key}")
+                    # 处理MQTT发送失败
+                    await self._handle_mqtt_failure(f"点位数据上报失败: {group_key}")
             
         except Exception as e:
             logger.error(f"发送点位数据失败: {e}")
+    
+    async def _handle_mqtt_failure(self, message: str):
+        """处理MQTT发送失败"""
+        current_time = time.time()
+        
+        # 增加失败计数器
+        self.mqtt_failure_count += 1
+        self.last_failure_time = current_time
+        
+        # 第一次失败记录警告
+        if self.mqtt_failure_count == 1:
+            logger.warning(message)
+        # 如果连续失败超过5次，开始降低日志频率并添加延迟
+        elif self.mqtt_failure_count >= 5:
+            if self.mqtt_failure_count % 10 == 0:  # 每10次失败记录一次
+                logger.warning(f"{message} (连续失败 {self.mqtt_failure_count} 次)")
+            
+            # 计算延迟时间（指数退避，最大30秒）
+            delay = min(self.failure_delay_base * (2 ** min(self.mqtt_failure_count // 5, 5)), 30)
+            logger.info(f"MQTT连续失败，等待 {delay} 秒后继续...")
+            await asyncio.sleep(delay)
+        else:
+            # 前5次失败正常记录
+            if self.mqtt_failure_count <= 3:
+                logger.warning(message)
+    
+    def _reset_mqtt_failure_count(self):
+        """重置MQTT失败计数器（发送成功时调用）"""
+        if self.mqtt_failure_count > 0:
+            logger.info(f"MQTT发送恢复正常，重置失败计数器（之前失败 {self.mqtt_failure_count} 次）")
+            self.mqtt_failure_count = 0
+            self.last_failure_time = 0
 
 # 全局数据转发器实例
 data_forwarder = DataForwarder()

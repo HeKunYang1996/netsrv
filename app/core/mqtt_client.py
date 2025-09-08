@@ -235,6 +235,12 @@ class MQTTClient:
                     return True
                 else:
                     logger.error(f"发布消息失败: {topic}, 错误码: {result.rc}")
+                    
+                    # 检查是否为连接相关错误，如果是则触发重连
+                    if self._is_connection_error(result.rc):
+                        logger.warning(f"检测到连接错误码 {result.rc}，触发MQTT重连")
+                        self._handle_connection_error()
+                    
                     return False
             else:
                 logger.warning(f"MQTT客户端未连接，无法发布消息: {topic}")
@@ -243,6 +249,43 @@ class MQTTClient:
             logger.error(f"发布消息异常: {topic}, {e}")
             return False
     
+    def _is_connection_error(self, error_code: int) -> bool:
+        """检查错误码是否为连接相关错误"""
+        # paho-mqtt错误码定义
+        # MQTT_ERR_NO_CONN = 4      # 没有连接
+        # MQTT_ERR_CONN_LOST = 7    # 连接丢失  
+        # MQTT_ERR_NOT_FOUND = 15   # 在发布上下文中通常表示连接问题
+        connection_error_codes = [4, 7, 15]
+        return error_code in connection_error_codes
+    
+    def _handle_connection_error(self):
+        """处理连接错误，强制断开并重连"""
+        try:
+            logger.info("处理连接错误：强制断开MQTT连接")
+            
+            # 标记为未连接状态
+            self.is_connected = False
+            
+            # 强制断开连接
+            try:
+                self.client.disconnect()
+                logger.info("MQTT连接已强制断开")
+            except Exception as e:
+                logger.warning(f"强制断开连接时发生异常: {e}")
+            
+            # 等待一小段时间让断开完成
+            time.sleep(1)
+            
+            # 如果启用了重连，触发重连
+            if hasattr(self, 'reconnect_enabled') and self.reconnect_enabled:
+                logger.info("开始自动重连...")
+                self._start_reconnect()
+            else:
+                logger.warning("自动重连未启用，请手动重启服务")
+                
+        except Exception as e:
+            logger.error(f"处理连接错误异常: {e}")
+
     def add_message_handler(self, topic: str, handler: Callable):
         """添加消息处理器"""
         self.message_handlers[topic] = handler
