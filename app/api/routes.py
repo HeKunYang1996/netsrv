@@ -57,11 +57,13 @@ class MQTTConfigResponse(BaseModel):
     """MQTT配置响应"""
     status: str = Field(default="success", description="响应状态")
     message: str = Field(default="操作成功", description="响应消息")
-    mqtt_connection: Optional[dict] = Field(default=None, description="当前MQTT配置")
+    data: Optional[dict] = Field(default=None, description="当前MQTT配置")
 
-class MQTTReconnectRequest(BaseModel):
-    """MQTT重连请求"""
-    force_disconnect: bool = Field(default=True, description="是否强制断开当前连接")
+class MQTTDisconnectResponse(BaseModel):
+    """MQTT断开连接响应"""
+    status: str = Field(default="success", description="响应状态")
+    message: str = Field(default="连接已关闭", description="响应消息")
+    was_connected: bool = Field(default=False, description="之前是否已连接")
 
 class MQTTReconnectResponse(BaseModel):
     """MQTT重连响应"""
@@ -175,7 +177,7 @@ async def get_mqtt_config():
         return MQTTConfigResponse(
             status="success",
             message="获取MQTT配置成功",
-            mqtt_connection={
+            data={
                 "broker": mqtt_config.get('broker', {})
             }
         )
@@ -223,7 +225,7 @@ async def update_mqtt_config(config_request: MQTTConfigUpdateRequest):
         return MQTTConfigResponse(
             status="success",
             message=response_message,
-            mqtt_connection={
+            data={
                 "broker": updated_config.get('broker', {})
             }
         )
@@ -235,20 +237,48 @@ async def update_mqtt_config(config_request: MQTTConfigUpdateRequest):
         raise HTTPException(status_code=500, detail=f"更新MQTT配置失败: {str(e)}")
 
 
-@router.post("/mqtt/reconnect", response_model=MQTTReconnectResponse)
-async def reconnect_mqtt(reconnect_request: MQTTReconnectRequest = MQTTReconnectRequest()):
+@router.post("/mqtt/disconnect", response_model=MQTTDisconnectResponse)
+async def disconnect_mqtt():
     """
-    MQTT断线重连
+    关闭MQTT连接
     
-    强制断开当前MQTT连接并重新连接。可选择是否强制断开当前连接。
+    主动关闭当前MQTT连接，禁用自动重连。
     """
     try:
-        if reconnect_request.force_disconnect:
-            # 强制重连（不重新加载配置）
-            success = mqtt_client.force_reconnect()
+        # 获取关闭前的连接状态
+        was_connected = mqtt_client.is_connected
+        
+        # 关闭连接
+        success = mqtt_client.close_connection()
+        
+        if success:
+            message = "MQTT连接已成功关闭" if was_connected else "MQTT连接已经处于关闭状态"
+            logger.info(message)
         else:
-            # 重新加载配置并重连
-            success = mqtt_client.reload_config_and_reconnect()
+            message = "MQTT连接关闭失败"
+            logger.warning(message)
+        
+        return MQTTDisconnectResponse(
+            status="success" if success else "failed",
+            message=message,
+            was_connected=was_connected
+        )
+        
+    except Exception as e:
+        logger.error(f"关闭MQTT连接失败: {e}")
+        raise HTTPException(status_code=500, detail=f"关闭MQTT连接失败: {str(e)}")
+
+
+@router.post("/mqtt/reconnect", response_model=MQTTReconnectResponse)
+async def reconnect_mqtt():
+    """
+    MQTT重新连接
+    
+    重新加载配置并重新连接MQTT。无论当前是否连接都可以使用。
+    """
+    try:
+        # 重新加载配置并重连
+        success = mqtt_client.reload_config_and_reconnect()
         
         # 获取当前连接状态
         connection_status = mqtt_client.get_connection_status()

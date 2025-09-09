@@ -190,6 +190,35 @@ class MQTTClient:
         except Exception as e:
             logger.error(f"MQTT断开连接失败: {e}")
     
+    def close_connection(self) -> bool:
+        """关闭MQTT连接（API专用方法）"""
+        try:
+            if not self.is_connected:
+                logger.info("MQTT连接已经关闭")
+                return True
+            
+            logger.info("正在关闭MQTT连接...")
+            
+            # 禁用自动重连
+            self.reconnect_enabled = False
+            
+            # 断开连接
+            self.disconnect()
+            
+            # 停止网络循环
+            if self.client:
+                try:
+                    self.client.loop_stop()
+                except:
+                    pass
+            
+            logger.info("MQTT连接已成功关闭")
+            return True
+            
+        except Exception as e:
+            logger.error(f"关闭MQTT连接失败: {e}")
+            return False
+    
     def subscribe(self, topic: str, qos: int = 0):
         """订阅主题"""
         try:
@@ -530,11 +559,11 @@ class MQTTClient:
         logger.info("重连计数器已重置")
     
     def reload_config_and_reconnect(self) -> bool:
-        """重新加载配置并重连"""
+        """重新加载配置并重连（无论当前是否连接）"""
         try:
             logger.info("开始重新加载MQTT配置并重连...")
             
-            # 断开当前连接
+            # 如果当前已连接，先断开
             if self.is_connected:
                 logger.info("断开当前MQTT连接...")
                 self.disconnect()
