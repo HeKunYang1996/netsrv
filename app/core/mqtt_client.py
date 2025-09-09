@@ -528,6 +528,123 @@ class MQTTClient:
         """重置重连计数器"""
         self.current_reconnect_attempts = 0
         logger.info("重连计数器已重置")
+    
+    def reload_config_and_reconnect(self) -> bool:
+        """重新加载配置并重连"""
+        try:
+            logger.info("开始重新加载MQTT配置并重连...")
+            
+            # 断开当前连接
+            if self.is_connected:
+                logger.info("断开当前MQTT连接...")
+                self.disconnect()
+            
+            # 停止当前客户端的网络循环
+            if self.client:
+                try:
+                    self.client.loop_stop()
+                except:
+                    pass
+            
+            # 重新加载配置
+            logger.info("重新加载MQTT配置...")
+            config_loader.reload_config()
+            
+            # 重新设置客户端
+            self._setup_client()
+            
+            # 重新连接
+            logger.info("开始重新连接MQTT...")
+            success = self.connect()
+            
+            if success:
+                logger.info("MQTT配置重载和重连成功")
+                return True
+            else:
+                logger.error("MQTT重连失败")
+                return False
+                
+        except Exception as e:
+            logger.error(f"MQTT配置重载和重连失败: {e}")
+            return False
+    
+    def force_reconnect(self) -> bool:
+        """强制重连（不重新加载配置）"""
+        try:
+            logger.info("开始强制重连MQTT...")
+            
+            # 断开当前连接
+            if self.is_connected:
+                logger.info("断开当前MQTT连接...")
+                self.disconnect()
+            
+            # 停止当前客户端的网络循环
+            if self.client:
+                try:
+                    self.client.loop_stop()
+                except:
+                    pass
+                
+            # 重置重连计数器
+            self.reset_reconnect_counter()
+            
+            # 重新连接
+            logger.info("开始重新连接MQTT...")
+            success = self.connect()
+            
+            if success:
+                logger.info("MQTT强制重连成功")
+                return True
+            else:
+                logger.error("MQTT强制重连失败")
+                return False
+                
+        except Exception as e:
+            logger.error(f"MQTT强制重连失败: {e}")
+            return False
+    
+    def get_connection_status(self) -> Dict[str, Any]:
+        """获取连接状态信息"""
+        try:
+            broker_config = self.mqtt_config.get('broker', {})
+            return {
+                "connected": self.is_connected,
+                "host": broker_config.get('host', 'unknown'),
+                "port": broker_config.get('port', 1883),
+                "client_id": broker_config.get('client_id', 'unknown'),
+                "reconnect_enabled": self.reconnect_enabled,
+                "reconnect_attempts": self.current_reconnect_attempts,
+                "max_reconnect_attempts": self.max_reconnect_attempts,
+                "reconnect_delay": self.reconnect_delay
+            }
+        except Exception as e:
+            logger.error(f"获取连接状态失败: {e}")
+            return {
+                "connected": False,
+                "error": str(e)
+            }
+    
+    def update_config(self, new_config: Dict[str, Any]) -> bool:
+        """更新MQTT配置（不立即重连）"""
+        try:
+            logger.info("更新MQTT客户端配置...")
+            
+            # 保存新配置
+            self.mqtt_config = new_config
+            broker_config = new_config.get('broker', {})
+            
+            # 更新重连配置
+            reconnect_config = broker_config.get('reconnect', {})
+            self.reconnect_enabled = reconnect_config.get('enabled', True)
+            self.reconnect_delay = reconnect_config.get('delay', 5)
+            self.max_reconnect_attempts = reconnect_config.get('max_attempts', 10)
+            
+            logger.info("MQTT客户端配置更新成功")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新MQTT客户端配置失败: {e}")
+            return False
 
 # 全局MQTT客户端实例
 mqtt_client = MQTTClient()
