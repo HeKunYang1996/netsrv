@@ -287,6 +287,52 @@ class MQTTClient:
         connection_error_codes = [4, 7, 15]
         return error_code in connection_error_codes
     
+    def _get_disconnect_error_info(self, rc: int) -> Dict[str, str]:
+        """获取断开连接错误的详细信息"""
+        error_info = {
+            0: {"type": "正常断开", "description": "客户端主动断开连接"},
+            1: {"type": "协议错误", "description": "MQTT协议版本不匹配"},
+            2: {"type": "客户端ID错误", "description": "客户端ID无效"},
+            3: {"type": "服务器不可用", "description": "MQTT服务器不可用"},
+            4: {"type": "认证失败", "description": "用户名或密码错误"},
+            5: {"type": "未授权", "description": "客户端未授权连接"},
+            7: {"type": "连接丢失", "description": "网络连接意外中断，可能是SSL错误"},
+            16: {"type": "网络错误", "description": "网络连接问题"},
+            17: {"type": "超时", "description": "连接超时"}
+        }
+        return error_info.get(rc, {"type": "未知错误", "description": f"错误码: {rc}"})
+    
+    def _is_ssl_related_error(self, rc: int) -> bool:
+        """检查是否为SSL相关错误"""
+        # SSL相关错误通常表现为连接丢失(7)或网络错误(16)
+        ssl_related_codes = [7, 16]
+        return rc in ssl_related_codes
+    
+    def _check_network_health(self) -> bool:
+        """检查网络连通性"""
+        try:
+            import socket
+            broker_config = self.mqtt_config.get('broker', {})
+            host = broker_config.get('host', 'localhost')
+            port = broker_config.get('port', 1883)
+            
+            # 创建socket连接测试
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)  # 5秒超时
+            result = sock.connect_ex((host, port))
+            sock.close()
+            
+            if result == 0:
+                logger.debug(f"网络连通性检查通过: {host}:{port}")
+                return True
+            else:
+                logger.warning(f"网络连通性检查失败: {host}:{port}, 错误码: {result}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"网络连通性检查异常: {e}")
+            return False
+    
     def _handle_connection_error(self):
         """处理连接错误，强制断开并重连"""
         try:
@@ -380,10 +426,20 @@ class MQTTClient:
                 logger.error(f"断开连接回调执行失败: {e}")
         
         if rc != 0:
-            logger.warning(f"MQTT意外断开，错误码: {rc}")
-            # 启动自动重连
-            if self.reconnect_enabled:
-                self._start_reconnect()
+            # 增强错误分类和日志记录
+            error_info = self._get_disconnect_error_info(rc)
+            logger.warning(f"MQTT意外断开，错误码: {rc}, 类型: {error_info['type']}, 描述: {error_info['description']}")
+            
+            # 检查是否为SSL相关错误
+            if self._is_ssl_related_error(rc):
+                logger.error("检测到SSL相关错误，立即触发重连")
+                # SSL错误需要立即重连，不等待
+                if self.reconnect_enabled:
+                    self._start_reconnect()
+            else:
+                # 其他错误按正常流程处理
+                if self.reconnect_enabled:
+                    self._start_reconnect()
         else:
             logger.info("MQTT连接已断开")
     
@@ -450,7 +506,7 @@ class MQTTClient:
             logger.error(f"同步发送在线消息失败: {e}")
     
     def _start_reconnect(self):
-        """启动重连机制"""
+        """启动重连机制（增强版）"""
         if self.current_reconnect_attempts >= self.max_reconnect_attempts:
             logger.error(f"达到最大重连次数 {self.max_reconnect_attempts}，停止重连")
             return
@@ -462,8 +518,15 @@ class MQTTClient:
                     self.current_reconnect_attempts += 1
                     logger.info(f"开始第 {self.current_reconnect_attempts} 次重连尝试...")
                     
-                    # 等待重连间隔
-                    time.sleep(self.reconnect_delay)
+                    # 使用指数退避算法，但限制最大延迟
+                    delay = min(self.reconnect_delay * (1.5 ** (self.current_reconnect_attempts - 1)), 60)
+                    logger.info(f"等待 {delay} 秒后重连...")
+                    time.sleep(delay)
+                    
+                    # 检查网络连通性
+                    if not self._check_network_health():
+                        logger.warning("网络连通性检查失败，跳过本次重连")
+                        continue
                     
                     if not self.is_connected:
                         success = self.connect()

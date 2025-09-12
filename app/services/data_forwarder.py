@@ -460,6 +460,12 @@ class DataForwarder:
                     "property": property_data
                 }
                 
+                # 发送数据前检查MQTT连接状态
+                if not mqtt_client.is_connected:
+                    logger.warning(f"MQTT未连接，跳过数据发送: {group_key}")
+                    await self._handle_mqtt_failure(f"MQTT未连接，跳过数据发送: {group_key}")
+                    return
+                
                 # 发送数据
                 if mqtt_client.publish(property_topic, message, qos=1):
                     # 发送成功，重置失败计数器
@@ -470,8 +476,8 @@ class DataForwarder:
                         for i in range(3):
                             mqtt_client.client.loop_write()
                             time.sleep(0.005)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"强制网络处理异常: {e}")
                 else:
                     # 处理MQTT发送失败
                     await self._handle_mqtt_failure(f"点位数据上报失败: {group_key}")

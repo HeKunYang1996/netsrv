@@ -31,7 +31,7 @@ mqtt_connection:
     username: ""  # AWS IoT通常不需要用户名
     password: ""  # AWS IoT通常不需要密码
     client_id: "netsrv_dev_client"  # 建议使用唯一标识
-    keepalive: 30  # AWS IoT建议使用较长的keepalive
+    keepalive: 120  # AWS IoT建议使用较长的keepalive
     
     # SSL配置
     ssl:
@@ -43,8 +43,8 @@ mqtt_connection:
     # 连接重试设置
     reconnect:
       enabled: true
-      max_attempts: 10
-      delay: 5  # 秒
+      max_attempts: 50
+      delay: 10  # 秒
       
     # 在线离线消息设置
     status:
