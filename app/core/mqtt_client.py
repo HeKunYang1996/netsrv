@@ -6,6 +6,7 @@ import json
 import time
 import asyncio
 import threading
+import ssl
 from typing import Optional, Callable, Dict, Any, List
 from loguru import logger
 import paho.mqtt.client as mqtt
@@ -157,6 +158,8 @@ class MQTTClient:
             
             if self.is_connected:
                 logger.info(f"MQTT连接成功: {broker_config.get('host')}:{broker_config.get('port')}")
+                # 启动SSL错误监控线程
+                self._start_ssl_error_monitor()
                 return True
             else:
                 logger.error("MQTT连接超时")
@@ -332,6 +335,69 @@ class MQTTClient:
         except Exception as e:
             logger.warning(f"网络连通性检查异常: {e}")
             return False
+    
+    def _start_ssl_error_monitor(self):
+        """启动SSL错误监控线程"""
+        def ssl_monitor():
+            """SSL错误监控线程"""
+            while self.is_connected:
+                try:
+                    # 检查MQTT客户端状态
+                    if not self.client or not self.client._sock:
+                        logger.warning("检测到MQTT客户端连接异常，触发重连")
+                        self._handle_ssl_error()
+                        break
+                    
+                    # 检查socket状态
+                    if hasattr(self.client, '_sock') and self.client._sock:
+                        try:
+                            # 尝试发送一个小的测试数据包
+                            self.client._sock.send(b'\x00')
+                        except (OSError, ConnectionError, ssl.SSLError) as e:
+                            logger.error(f"检测到SSL连接错误: {e}")
+                            self._handle_ssl_error()
+                            break
+                    
+                    time.sleep(5)  # 每5秒检查一次
+                    
+                except Exception as e:
+                    logger.error(f"SSL监控线程异常: {e}")
+                    time.sleep(10)
+        
+        # 启动监控线程
+        monitor_thread = threading.Thread(target=ssl_monitor, daemon=True)
+        monitor_thread.start()
+        logger.info("SSL错误监控线程已启动")
+    
+    def _handle_ssl_error(self):
+        """处理SSL错误"""
+        try:
+            logger.error("处理SSL错误：强制断开并重连")
+            
+            # 标记为未连接状态
+            self.is_connected = False
+            
+            # 强制断开连接
+            try:
+                if self.client:
+                    self.client.loop_stop()
+                    self.client.disconnect()
+                    logger.info("MQTT连接已强制断开")
+            except Exception as e:
+                logger.warning(f"强制断开连接时发生异常: {e}")
+            
+            # 等待一小段时间让断开完成
+            time.sleep(2)
+            
+            # 如果启用了重连，触发重连
+            if self.reconnect_enabled:
+                logger.info("开始自动重连...")
+                self._start_reconnect()
+            else:
+                logger.warning("自动重连未启用，请手动重启服务")
+                
+        except Exception as e:
+            logger.error(f"处理SSL错误异常: {e}")
     
     def _handle_connection_error(self):
         """处理连接错误，强制断开并重连"""
