@@ -30,7 +30,7 @@ mqtt_connection:
     port: 1883  # AWS IoT默认端口
     username: ""  # AWS IoT通常不需要用户名
     password: ""  # AWS IoT通常不需要密码
-    client_id: "netsrv_dev_client"  # 建议使用唯一标识
+    client_id: "auto"  # auto表示使用设备序列号，或设置固定值
     keepalive: 120  # AWS IoT建议使用较长的keepalive
     
     # SSL配置

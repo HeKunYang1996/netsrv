@@ -48,8 +48,18 @@ class MQTTClient:
             if 'max_reconnect_attempts' in self.mqtt_config:
                 self.max_reconnect_attempts = self.mqtt_config['max_reconnect_attempts']
             
+            # 处理client_id逻辑
+            client_id = broker_config.get('client_id', 'netsrv_client')
+            if client_id in ['auto', '', None] or not client_id.strip():
+                # 使用设备序列号作为client_id
+                from .device_identity import device_identity
+                client_id = device_identity.device_sn
+                logger.info(f"使用设备序列号作为MQTT客户端ID: {client_id}")
+            else:
+                logger.info(f"使用配置的MQTT客户端ID: {client_id}")
+            
             self.client = mqtt.Client(
-                client_id=broker_config.get('client_id', 'netsrv_client'),
+                client_id=client_id,
                 clean_session=broker_config.get('clean_session', True),
                 protocol=mqtt.MQTTv311
             )
