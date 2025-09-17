@@ -27,6 +27,12 @@ class MQTTClient:
         self.reconnect_delay = 5
         self.max_reconnect_attempts = 10
         self.current_reconnect_attempts = 0
+        
+        # 连接稳定性相关属性
+        self.last_disconnect_time = 0
+        self.disconnect_count = 0
+        self.min_disconnect_interval = 60  # 最小断开间隔（秒）- 增加到60秒
+        self.max_disconnect_count = 10  # 最大断开计数，超过后延长等待时间
         self._setup_client()
     
     def _setup_client(self):
@@ -274,7 +280,7 @@ class MQTTClient:
                     
                     # 对于状态消息，输出详细信息
                     if 'status/' in topic:
-                        logger.info(f"状态消息发布: {topic} -> {payload_str}")
+                        logger.debug(f"状态消息发布: {topic} -> {payload_str}")
                     
                     return True
                 else:
@@ -323,9 +329,54 @@ class MQTTClient:
         if not hasattr(self, '_ssl_enabled') or not self._ssl_enabled:
             return False
         
-        # SSL相关错误通常表现为连接丢失(7)或网络错误(16)
+        # SSL相关错误码（更精确的判断）
+        # 7: 连接丢失 - 可能是SSL握手失败或证书问题
+        # 16: 网络错误 - 可能是SSL连接问题
         ssl_related_codes = [7, 16]
         return rc in ssl_related_codes
+    
+    def _get_network_quality_level(self) -> str:
+        """评估网络质量等级"""
+        if self.disconnect_count == 0:
+            return "excellent"
+        elif self.disconnect_count <= 5:
+            return "good"
+        elif self.disconnect_count <= 20:
+            return "fair"
+        elif self.disconnect_count <= 50:
+            return "poor"
+        else:
+            return "very_poor"
+    
+    def _check_connection_stability(self) -> bool:
+        """检查连接稳定性，避免频繁重连"""
+        import time
+        current_time = time.time()
+        
+        # 计算动态等待时间
+        network_quality = self._get_network_quality_level()
+        
+        if network_quality == "very_poor":
+            # 网络质量很差时，使用更长的等待时间
+            wait_time = 300  # 5分钟
+        elif network_quality == "poor":
+            wait_time = 120  # 2分钟
+        elif network_quality == "fair":
+            wait_time = 60   # 1分钟
+        else:
+            wait_time = self.min_disconnect_interval  # 60秒
+        
+        # 如果距离上次断开时间太短，认为是网络波动，不立即重连
+        if current_time - self.last_disconnect_time < wait_time:
+            self.disconnect_count += 1
+            logger.warning(f"连接断开过于频繁（{self.disconnect_count}次，网络质量: {network_quality}），等待 {wait_time} 秒后重连...")
+            return False
+        
+        # 重置断开计数
+        if self.disconnect_count > 0:
+            logger.info(f"连接稳定，重置断开计数（之前 {self.disconnect_count} 次）")
+        self.disconnect_count = 0
+        return True
     
     def _check_network_health(self) -> bool:
         """检查网络连通性"""
@@ -459,6 +510,11 @@ class MQTTClient:
             self.is_connected = True
             self.current_reconnect_attempts = 0  # 重置重连计数
             
+            # 连接成功后重置断开计数
+            if self.disconnect_count > 0:
+                logger.info(f"MQTT连接成功，重置断开计数（之前 {self.disconnect_count} 次）")
+                self.disconnect_count = 0
+            
             if flags.get('session_present', False):
                 logger.info("MQTT连接已建立（恢复会话）")
             else:
@@ -513,18 +569,27 @@ class MQTTClient:
                 logger.error(f"断开连接回调执行失败: {e}")
         
         if rc != 0:
+            # 记录断开时间
+            import time
+            self.last_disconnect_time = time.time()
+            
             # 增强错误分类和日志记录
             error_info = self._get_disconnect_error_info(rc)
             logger.warning(f"MQTT意外断开，错误码: {rc}, 类型: {error_info['type']}, 描述: {error_info['description']}")
             
+            # 检查连接稳定性
+            if not self._check_connection_stability():
+                logger.info("连接不稳定，跳过本次重连")
+                return
+            
             # 检查是否为SSL相关错误
             if self._is_ssl_related_error(rc):
-                logger.error("检测到SSL相关错误，立即触发重连")
-                # SSL错误需要立即重连，不等待
+                logger.error("检测到SSL相关错误，触发重连")
                 if self.reconnect_enabled:
                     self._start_reconnect()
             else:
                 # 其他错误按正常流程处理
+                logger.info("检测到网络错误，触发重连")
                 if self.reconnect_enabled:
                     self._start_reconnect()
         else:
@@ -552,7 +617,7 @@ class MQTTClient:
             
             # 发送在线消息
             if self.publish(status_topic, online_message, qos=1, retain=True):
-                logger.info(f"设备在线消息发送成功: {status_topic}")
+                logger.debug(f"设备在线消息发送成功: {status_topic}")
             else:
                 logger.error("设备在线消息发送失败")
                 
@@ -578,7 +643,7 @@ class MQTTClient:
             
             # 立即发送在线消息（使用QoS 1确保传输）
             if self.publish(status_topic, online_message, qos=1, retain=True):
-                logger.info(f"设备在线消息发送成功: {status_topic}")
+                logger.debug(f"设备在线消息发送成功: {status_topic}")
                 # 额外强制网络处理，确保立即发送
                 try:
                     for i in range(10):
@@ -594,19 +659,27 @@ class MQTTClient:
     
     def _start_reconnect(self):
         """启动重连机制（增强版）"""
-        if self.current_reconnect_attempts >= self.max_reconnect_attempts:
-            logger.error(f"达到最大重连次数 {self.max_reconnect_attempts}，停止重连")
-            return
+        # 移除最大重连次数限制，确保重连线程持续运行
         
         def reconnect_worker():
             """重连工作线程"""
-            while self.current_reconnect_attempts < self.max_reconnect_attempts and not self.is_connected:
+            while not self.is_connected:
                 try:
                     self.current_reconnect_attempts += 1
                     logger.info(f"开始第 {self.current_reconnect_attempts} 次重连尝试...")
                     
-                    # 使用指数退避算法，但限制最大延迟
-                    delay = min(self.reconnect_delay * (1.5 ** (self.current_reconnect_attempts - 1)), 60)
+                    # 使用更保守的延迟策略
+                    if self.current_reconnect_attempts <= self.max_reconnect_attempts:
+                        # 前几次重连使用较短延迟，后续逐渐增加
+                        if self.current_reconnect_attempts <= 3:
+                            delay = self.reconnect_delay
+                        else:
+                            delay = min(self.reconnect_delay * (1.2 ** (self.current_reconnect_attempts - 3)), 120)
+                    else:
+                        # 超过最大重连次数后，使用固定长延迟（5分钟）
+                        delay = 300
+                        logger.warning(f"已超过最大重连次数 {self.max_reconnect_attempts}，使用长延迟重连")
+                    
                     logger.info(f"等待 {delay} 秒后重连...")
                     time.sleep(delay)
                     
@@ -625,10 +698,8 @@ class MQTTClient:
                     
                 except Exception as e:
                     logger.error(f"重连异常: {e}")
-                    break
-            
-            if self.current_reconnect_attempts >= self.max_reconnect_attempts and not self.is_connected:
-                logger.error(f"重连失败，已达到最大尝试次数 {self.max_reconnect_attempts}")
+                    # 发生异常时等待一段时间再继续
+                    time.sleep(30)
         
         # 在后台线程中执行重连
         thread = threading.Thread(target=reconnect_worker, daemon=True)

@@ -190,7 +190,7 @@ class DataForwarder:
             if mqtt_client.publish(property_topic, message, qos=1):
                 # 发送成功，重置失败计数器
                 self._reset_mqtt_failure_count()
-                logger.info(f"系统监控数据上报成功: {property_topic}")
+                logger.debug(f"系统监控数据上报成功: {property_topic}")
                 logger.debug(f"系统监控数据内容: {json.dumps(message, indent=2)}")
                 # 额外强制网络处理（在publish中已经处理了一次）
                 try:
@@ -326,13 +326,8 @@ class DataForwarder:
     def _pattern_match(self, pattern: str, key: str) -> bool:
         """检查键是否匹配模式"""
         try:
-            if '*' in pattern:
-                pattern_parts = pattern.split('*')
-                if len(pattern_parts) == 2:
-                    return key.startswith(pattern_parts[0]) and key.endswith(pattern_parts[1])
-                elif len(pattern_parts) == 1:
-                    return key.startswith(pattern_parts[0])
-            return pattern == key
+            import fnmatch
+            return fnmatch.fnmatch(key, pattern)
         except:
             return False
     
@@ -409,11 +404,11 @@ class DataForwarder:
                     for i in range(0, len(group_items), batch_size):
                         batch_items = group_items[i:i + batch_size]
                         await self._send_property_data(batch_items, group_key)
-                        logger.info(f"分组 {group_key} 分割发送第 {i//batch_size + 1} 批，包含 {len(batch_items)} 个点位")
+                        logger.debug(f"分组 {group_key} 分割发送第 {i//batch_size + 1} 批，包含 {len(batch_items)} 个点位")
                 else:
                     # 直接发送整个分组
                     await self._send_property_data(group_items, group_key)
-                    logger.info(f"分组 {group_key} 发送完成，包含 {len(group_items)} 个点位")
+                    logger.debug(f"分组 {group_key} 发送完成，包含 {len(group_items)} 个点位")
                     
         except Exception as e:
             logger.error(f"分组发送数据失败: {e}")
@@ -462,7 +457,7 @@ class DataForwarder:
                 
                 # 发送数据前检查MQTT连接状态
                 if not mqtt_client.is_connected:
-                    logger.warning(f"MQTT未连接，跳过数据发送: {group_key}")
+                    logger.debug(f"MQTT未连接，跳过数据发送: {group_key}")
                     await self._handle_mqtt_failure(f"MQTT未连接，跳过数据发送: {group_key}")
                     return
                 
@@ -503,7 +498,7 @@ class DataForwarder:
             
             # 计算延迟时间（指数退避，最大30秒）
             delay = min(self.failure_delay_base * (2 ** min(self.mqtt_failure_count // 5, 5)), 30)
-            logger.info(f"MQTT连续失败，等待 {delay} 秒后继续...")
+            logger.debug(f"MQTT连续失败，等待 {delay} 秒后继续...")
             await asyncio.sleep(delay)
         else:
             # 前5次失败正常记录

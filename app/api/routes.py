@@ -5,6 +5,7 @@ API路由模块
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from typing import Dict, Any
 from pathlib import Path
+import asyncio
 from loguru import logger
 from app.services.data_forwarder import data_forwarder
 from app.services.alarm_broadcaster import alarm_broadcaster
@@ -134,9 +135,18 @@ async def broadcast_alarm(request: Request):
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"告警数据格式错误: {error_msg}")
         
-        # 检查MQTT连接状态
+        # 检查MQTT连接状态，如果未连接则等待一段时间后重试
         if not mqtt_client.is_connected:
-            raise HTTPException(status_code=503, detail="MQTT服务未连接，无法发送告警")
+            # 等待最多30秒，每5秒检查一次连接状态
+            for i in range(6):
+                await asyncio.sleep(5)
+                if mqtt_client.is_connected:
+                    break
+                logger.warning(f"MQTT未连接，等待重连... ({i+1}/6)")
+            
+            # 如果仍然未连接，返回503错误
+            if not mqtt_client.is_connected:
+                raise HTTPException(status_code=503, detail="MQTT服务未连接，无法发送告警")
         
         # 广播告警消息（原样转发）
         success = alarm_broadcaster.broadcast_alarm(alarm_data)

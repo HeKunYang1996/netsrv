@@ -47,12 +47,17 @@ if docker images | grep -q "voltageems-netsrv"; then
     echo "📋 可用镜像:"
     docker images | grep voltageems-netsrv
     
-    # 自动为最新加载的镜像创建latest标签
+    # 自动为最新加载的镜像创建latest标签，并删除原版本标签
     echo "🏷️  创建latest标签..."
     LATEST_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "voltageems-netsrv" | grep -v latest | head -1)
     if [ -n "$LATEST_IMAGE" ]; then
         docker tag "$LATEST_IMAGE" "voltageems-netsrv:latest"
         echo "✅ 已创建latest标签: $LATEST_IMAGE -> voltageems-netsrv:latest"
+        
+        # 删除原版本标签，只保留latest
+        echo "🗑️  删除原版本标签: $LATEST_IMAGE"
+        docker rmi "$LATEST_IMAGE" 2>/dev/null || true
+        echo "✅ 已删除原版本标签，只保留latest镜像"
     fi
 else
     echo "❌ 镜像加载失败"

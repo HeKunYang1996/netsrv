@@ -186,5 +186,5 @@ logging:
   module_levels:
     mqtt: "DEBUG"
     redis: "INFO"
-    forwarder: "INFO"
+    forwarder: "DEBUG"  # 改为DEBUG，屏蔽数据上传的详细日志
     device_identity: "DEBUG"
