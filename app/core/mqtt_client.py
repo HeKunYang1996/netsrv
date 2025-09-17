@@ -81,7 +81,8 @@ class MQTTClient:
             
             # 设置SSL
             ssl_config = broker_config.get('ssl', {})
-            if ssl_config.get('enabled', False):
+            self._ssl_enabled = ssl_config.get('enabled', False)
+            if self._ssl_enabled:
                 ca_cert = ssl_config.get('ca_cert')
                 client_cert = ssl_config.get('client_cert')
                 client_key = ssl_config.get('client_key')
@@ -168,8 +169,9 @@ class MQTTClient:
             
             if self.is_connected:
                 logger.info(f"MQTT连接成功: {broker_config.get('host')}:{broker_config.get('port')}")
-                # 启动SSL错误监控线程
-                self._start_ssl_error_monitor()
+                # 只有在启用SSL时才启动SSL错误监控线程
+                if self._ssl_enabled:
+                    self._start_ssl_error_monitor()
                 return True
             else:
                 logger.error("MQTT连接超时")
@@ -317,6 +319,10 @@ class MQTTClient:
     
     def _is_ssl_related_error(self, rc: int) -> bool:
         """检查是否为SSL相关错误"""
+        # 只有在启用SSL时才检查SSL相关错误
+        if not hasattr(self, '_ssl_enabled') or not self._ssl_enabled:
+            return False
+        
         # SSL相关错误通常表现为连接丢失(7)或网络错误(16)
         ssl_related_codes = [7, 16]
         return rc in ssl_related_codes
@@ -348,6 +354,11 @@ class MQTTClient:
     
     def _start_ssl_error_monitor(self):
         """启动SSL错误监控线程"""
+        # 只有在启用SSL时才启动监控
+        if not self._ssl_enabled:
+            logger.debug("SSL未启用，跳过SSL错误监控")
+            return
+            
         def ssl_monitor():
             """SSL错误监控线程"""
             while self.is_connected:

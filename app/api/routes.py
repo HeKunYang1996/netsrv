@@ -2,11 +2,13 @@
 API路由模块
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from typing import Dict, Any
+from pathlib import Path
 from loguru import logger
 from app.services.data_forwarder import data_forwarder
 from app.services.alarm_broadcaster import alarm_broadcaster
+from app.services.certificate_manager import certificate_manager
 from app.core.database import redis_manager
 from app.core.mqtt_client import mqtt_client
 from app.core.config import settings
@@ -77,6 +79,27 @@ class MQTTStatusResponse(BaseModel):
     connected: bool = Field(default=False, description="是否已连接")
     current_config: Optional[dict] = Field(default=None, description="当前配置信息")
     reconnect_attempts: int = Field(default=0, description="当前重连尝试次数")
+
+class CertificateUploadResponse(BaseModel):
+    """证书上传响应"""
+    status: str = Field(default="success", description="响应状态")
+    message: str = Field(default="证书上传成功", description="响应消息")
+    cert_type: str = Field(description="证书类型")
+    filename: str = Field(description="保存的文件名")
+    path: str = Field(description="证书在配置文件中的路径")
+    config_updated: bool = Field(default=True, description="配置文件是否已更新")
+
+class CertificateInfoResponse(BaseModel):
+    """证书信息响应"""
+    status: str = Field(default="success", description="响应状态")
+    ssl_enabled: bool = Field(description="SSL是否启用")
+    certificates: Dict[str, Any] = Field(description="证书信息")
+
+class CertificateDeleteResponse(BaseModel):
+    """证书删除响应"""
+    status: str = Field(default="success", description="响应状态")
+    message: str = Field(default="证书删除成功", description="响应消息")
+    cert_type: str = Field(description="证书类型")
 
 router = APIRouter(prefix="/netApi", tags=["网络服务"])
 
@@ -331,3 +354,140 @@ async def get_mqtt_status():
     except Exception as e:
         logger.error(f"获取MQTT状态失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取MQTT状态失败: {str(e)}")
+
+
+# 证书管理接口
+
+@router.post("/certificate/upload", response_model=CertificateUploadResponse)
+async def upload_certificate(
+    cert_type: str = Form(..., description="证书类型 (ca_cert, client_cert, client_key)"),
+    file: UploadFile = File(..., description="证书文件")
+):
+    """
+    上传证书文件
+    
+    支持上传三种类型的证书文件：
+    - ca_cert: CA根证书
+    - client_cert: 客户端证书
+    - client_key: 客户端私钥
+    
+    上传成功后会自动更新配置文件中的证书路径，并删除旧证书文件。
+    """
+    try:
+        # 验证证书类型
+        if cert_type not in ['ca_cert', 'client_cert', 'client_key']:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"不支持的证书类型: {cert_type}。支持的类型: ca_cert, client_cert, client_key"
+            )
+        
+        # 验证文件类型
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+        
+        # 检查文件扩展名
+        allowed_extensions = ['.pem', '.crt', '.key', '.cer', '.p12', '.pfx']
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"不支持的文件类型: {file_ext}。支持的类型: {', '.join(allowed_extensions)}"
+            )
+        
+        # 读取文件内容
+        file_content = await file.read()
+        
+        # 验证文件大小（限制为1MB）
+        max_size = 1024 * 1024  # 1MB
+        if len(file_content) > max_size:
+            raise HTTPException(status_code=400, detail=f"文件大小超过限制: {len(file_content)} bytes，最大允许: {max_size} bytes")
+        
+        # 验证文件内容不为空
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="文件内容不能为空")
+        
+        # 上传证书
+        success, message, saved_filename = certificate_manager.upload_certificate(cert_type, file_content, file.filename)
+        
+        if success:
+            # 获取证书在配置文件中的路径
+            cert_path = f"cert/{saved_filename}"
+            
+            return CertificateUploadResponse(
+                status="success",
+                message=message,
+                cert_type=cert_type,
+                filename=saved_filename,
+                path=cert_path,
+                config_updated=True
+            )
+        else:
+            raise HTTPException(status_code=500, detail=message)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"上传证书失败: {e}")
+        raise HTTPException(status_code=500, detail=f"上传证书失败: {str(e)}")
+
+
+@router.get("/certificate/info", response_model=CertificateInfoResponse)
+async def get_certificate_info():
+    """
+    获取当前证书信息
+    
+    返回当前配置的证书文件信息，包括文件路径、是否存在、文件大小等。
+    """
+    try:
+        cert_info = certificate_manager.get_certificate_info()
+        
+        return CertificateInfoResponse(
+            status="success",
+            ssl_enabled=cert_info.get('ssl_enabled', False),
+            certificates=cert_info.get('certificates', {})
+        )
+        
+    except Exception as e:
+        logger.error(f"获取证书信息失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取证书信息失败: {str(e)}")
+
+
+@router.delete("/certificate/{cert_type}", response_model=CertificateDeleteResponse)
+async def delete_certificate(cert_type: str):
+    """
+    删除证书文件
+    
+    删除指定类型的证书文件，并清空配置文件中的对应路径。
+    
+    支持的证书类型：
+    - ca_cert: CA根证书
+    - client_cert: 客户端证书  
+    - client_key: 客户端私钥
+    """
+    try:
+        # 验证证书类型
+        if cert_type not in ['ca_cert', 'client_cert', 'client_key']:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"不支持的证书类型: {cert_type}。支持的类型: ca_cert, client_cert, client_key"
+            )
+        
+        # 删除证书
+        success, message = certificate_manager.delete_certificate(cert_type)
+        
+        if success:
+            return CertificateDeleteResponse(
+                status="success",
+                message=message,
+                cert_type=cert_type
+            )
+        else:
+            raise HTTPException(status_code=500, detail=message)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除证书失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除证书失败: {str(e)}")
+
+
