@@ -197,8 +197,8 @@ async def get_mqtt_config():
     返回当前的MQTT连接配置，包括代理设置、SSL配置、重连配置等
     """
     try:
-        # 获取当前配置
-        mqtt_config = config_loader.get_mqtt_connection_config()
+        # 获取当前配置（使用API专用方法，返回原始相对路径）
+        mqtt_config = config_loader.get_mqtt_connection_config_for_api()
         
         # 获取连接状态
         connection_status = mqtt_client.get_connection_status()
@@ -251,7 +251,7 @@ async def update_mqtt_config(config_request: MQTTConfigUpdateRequest):
             response_message = "MQTT配置更新成功，但重连失败，请检查配置或网络连接"
         
         # 返回更新后的配置（移除敏感信息）
-        updated_config = config_loader.get_mqtt_connection_config()
+        updated_config = config_loader.get_mqtt_connection_config_for_api()
         if 'broker' in updated_config and 'password' in updated_config['broker']:
             updated_config['broker']['password'] = "***" if updated_config['broker']['password'] else ""
         

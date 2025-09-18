@@ -148,10 +148,10 @@ class ConfigLoader:
         }
 
     def get_mqtt_connection_config(self) -> Dict[str, Any]:
-        """获取MQTT连接配置"""
+        """获取MQTT连接配置（用于MQTT客户端连接，统一使用full_path）"""
         mqtt_config = self.get_config('mqtt_connection', {})
         
-        # 处理SSL证书路径，转换为绝对路径
+        # 处理SSL证书路径，统一转换为绝对路径（用于MQTT客户端连接）
         if mqtt_config.get('broker', {}).get('ssl', {}).get('enabled', False):
             ssl_config = mqtt_config['broker']['ssl']
             
@@ -165,13 +165,14 @@ class ConfigLoader:
                 config_dir = Path("config")
                 logger.debug("检测到本地开发环境，使用相对路径")
             
-            # 转换证书路径
-            if ssl_config.get('ca_cert'):
-                ssl_config['ca_cert'] = str(config_dir / ssl_config['ca_cert'])
-            if ssl_config.get('client_cert'):
-                ssl_config['client_cert'] = str(config_dir / ssl_config['client_cert'])
-            if ssl_config.get('client_key'):
-                ssl_config['client_key'] = str(config_dir / ssl_config['client_key'])
+            # 转换证书路径，统一使用绝对路径
+            for cert_key in ['ca_cert', 'client_cert', 'client_key']:
+                if ssl_config.get(cert_key):
+                    # 如果是双路径结构，使用full_path；否则转换相对路径
+                    if isinstance(ssl_config[cert_key], dict) and 'full_path' in ssl_config[cert_key]:
+                        ssl_config[cert_key] = ssl_config[cert_key]['full_path']
+                    else:
+                        ssl_config[cert_key] = str(config_dir / ssl_config[cert_key])
             
             logger.debug(f"SSL证书路径: CA={ssl_config.get('ca_cert')}, Cert={ssl_config.get('client_cert')}, Key={ssl_config.get('client_key')}")
         
@@ -185,6 +186,60 @@ class ConfigLoader:
             mqtt_config['reconnect_enabled'] = False
         
         return mqtt_config
+    
+    def get_mqtt_connection_config_for_api(self) -> Dict[str, Any]:
+        """获取MQTT连接配置（用于API接口，返回双路径：path和full_path）"""
+        # 直接从配置文件读取原始数据，避免使用可能被修改过的内存数据
+        try:
+            import yaml
+            config_path = Path("config/netsrv.yaml")
+            if not config_path.exists():
+                config_path = Path("config/netsrv.yaml")
+            
+            with open(config_path, 'r', encoding='utf-8') as file:
+                config_data = yaml.safe_load(file)
+            
+            mqtt_config = config_data.get('mqtt_connection', {})
+            
+            # 为SSL证书添加双路径：path（原始相对路径）和full_path（绝对路径）
+            if mqtt_config.get('broker', {}).get('ssl', {}).get('enabled', False):
+                ssl_config = mqtt_config['broker']['ssl']
+                
+                # 检查是否在容器环境中运行
+                if os.path.exists('/app/config') and os.path.isdir('/app/config'):
+                    # 容器环境：使用绝对路径
+                    config_dir = Path('/app/config')
+                else:
+                    # 本地开发环境：使用相对路径
+                    config_dir = Path("config")
+                
+                # 为每个证书添加双路径
+                for cert_key in ['ca_cert', 'client_cert', 'client_key']:
+                    if ssl_config.get(cert_key):
+                        original_path = ssl_config[cert_key]
+                        full_path = str(config_dir / original_path)
+                        
+                        # 创建双路径结构
+                        ssl_config[cert_key] = {
+                            'path': original_path,        # 原始相对路径
+                            'full_path': full_path       # 绝对路径
+                        }
+            
+            # 配置重连参数
+            reconnect_config = mqtt_config.get('broker', {}).get('reconnect', {})
+            if reconnect_config.get('enabled', True):
+                mqtt_config['reconnect_enabled'] = True
+                mqtt_config['reconnect_delay'] = reconnect_config.get('delay', 5)
+                mqtt_config['max_reconnect_attempts'] = reconnect_config.get('max_attempts', 10)
+            else:
+                mqtt_config['reconnect_enabled'] = False
+            
+            return mqtt_config
+            
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            # 如果读取文件失败，回退到内存数据
+            return self.get_config('mqtt_connection', {})
     
     def get_mqtt_topics_config(self) -> Dict[str, Any]:
         """获取MQTT主题配置"""
