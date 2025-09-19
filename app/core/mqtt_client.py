@@ -31,8 +31,8 @@ class MQTTClient:
         # 连接稳定性相关属性
         self.last_disconnect_time = 0
         self.disconnect_count = 0
-        self.min_disconnect_interval = 60  # 最小断开间隔（秒）- 增加到60秒
-        self.max_disconnect_count = 10  # 最大断开计数，超过后延长等待时间
+        self.min_disconnect_interval = 120  # 最小断开间隔（秒）- 增加到120秒，更宽松
+        self.max_disconnect_count = 5  # 最大断开计数，超过后延长等待时间
         self._setup_client()
     
     def _setup_client(self):
@@ -78,6 +78,9 @@ class MQTTClient:
             self.client.on_disconnect = self._on_disconnect
             self.client.on_message = self._on_message
             self.client.on_publish = self._on_publish
+            
+            # AWS IoT Core 优化配置
+            self._setup_aws_iot_optimization()
             
             # 设置认证
             username = broker_config.get('username', '')
@@ -146,6 +149,26 @@ class MQTTClient:
             
         except Exception as e:
             logger.error(f"设置MQTT遗嘱消息失败: {e}")
+    
+    def _setup_aws_iot_optimization(self):
+        """设置AWS IoT Core优化配置"""
+        try:
+            # 调整inflight和队列参数，适应AWS IoT Core
+            self.client.max_inflight_messages_set(100)  # 增加inflight消息数
+            self.client.max_queued_messages_set(10000)  # 增加队列大小
+            
+            # 设置keepalive（如果配置中有）
+            broker_config = self.mqtt_config.get('broker', {})
+            keepalive = broker_config.get('keepalive', 60)
+            self.client.keepalive = keepalive
+            
+            logger.info(f"AWS IoT Core优化配置已应用:")
+            logger.info(f"  - max_inflight_messages: 100")
+            logger.info(f"  - max_queued_messages: 10000")
+            logger.info(f"  - keepalive: {keepalive}秒")
+            
+        except Exception as e:
+            logger.error(f"设置AWS IoT Core优化配置失败: {e}")
     
     def connect(self) -> bool:
         """连接到MQTT代理"""
@@ -336,14 +359,14 @@ class MQTTClient:
         return rc in ssl_related_codes
     
     def _get_network_quality_level(self) -> str:
-        """评估网络质量等级"""
+        """评估网络质量等级（更宽松的判断）"""
         if self.disconnect_count == 0:
             return "excellent"
-        elif self.disconnect_count <= 5:
+        elif self.disconnect_count <= 3:
             return "good"
-        elif self.disconnect_count <= 20:
+        elif self.disconnect_count <= 10:
             return "fair"
-        elif self.disconnect_count <= 50:
+        elif self.disconnect_count <= 20:
             return "poor"
         else:
             return "very_poor"
@@ -577,21 +600,24 @@ class MQTTClient:
             error_info = self._get_disconnect_error_info(rc)
             logger.warning(f"MQTT意外断开，错误码: {rc}, 类型: {error_info['type']}, 描述: {error_info['description']}")
             
+            # 更保守的重连策略：只在真正的断开时才重连
+            # 让TLS和SDK的容错机制处理网络波动
+            
             # 检查连接稳定性
             if not self._check_connection_stability():
-                logger.info("连接不稳定，跳过本次重连")
+                logger.info("连接不稳定，跳过本次重连，让SDK容错机制处理")
                 return
             
-            # 检查是否为SSL相关错误
-            if self._is_ssl_related_error(rc):
-                logger.error("检测到SSL相关错误，触发重连")
+            # 只对严重的连接错误进行重连
+            serious_errors = [1, 2, 3, 4, 5]  # 协议错误、认证失败等严重错误
+            if rc in serious_errors:
+                logger.error(f"检测到严重连接错误 {rc}，触发重连")
                 if self.reconnect_enabled:
                     self._start_reconnect()
             else:
-                # 其他错误按正常流程处理
-                logger.info("检测到网络错误，触发重连")
-                if self.reconnect_enabled:
-                    self._start_reconnect()
+                # 对于网络错误(7, 16)等，让SDK容错机制处理
+                logger.info(f"网络错误 {rc}，让SDK容错机制处理，不主动重连")
+                # 不主动重连，让MQTT客户端库自己处理
         else:
             logger.info("MQTT连接已断开")
     

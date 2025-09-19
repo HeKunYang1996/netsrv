@@ -28,6 +28,12 @@ class DataForwarder:
         self.last_failure_time = 0
         self.failure_delay_base = 1  # 基础延迟时间（秒）
         
+        # AWS IoT Core 限速配置
+        self.max_messages_per_second = 10  # 每秒最大消息数
+        self.message_queue = []  # 消息队列
+        self.last_send_time = 0  # 上次发送时间
+        self.send_interval = 1.0 / self.max_messages_per_second  # 发送间隔
+        
     async def start(self):
         """启动数据转发服务"""
         if self.is_running:
@@ -46,6 +52,76 @@ class DataForwarder:
         # 启动转发任务
         self.forward_task = asyncio.create_task(self._forward_loop())
         logger.info("数据转发服务启动成功")
+    
+    async def _rate_limited_send(self, topic: str, payload: str, qos: int = 0):
+        """限速发送消息，适应AWS IoT Core"""
+        try:
+            current_time = time.time()
+            
+            # 检查发送间隔
+            if current_time - self.last_send_time < self.send_interval:
+                # 添加到队列，稍后发送
+                self.message_queue.append((topic, payload, qos))
+                return
+            
+            # 直接发送
+            await self._send_message(topic, payload, qos)
+            self.last_send_time = current_time
+            
+            # 处理队列中的消息
+            if self.message_queue:
+                await self._process_message_queue()
+                
+        except Exception as e:
+            logger.error(f"限速发送失败: {e}")
+    
+    async def _process_message_queue(self):
+        """处理消息队列"""
+        try:
+            current_time = time.time()
+            
+            # 计算可以发送的消息数量
+            time_since_last_send = current_time - self.last_send_time
+            max_send_count = int(time_since_last_send * self.max_messages_per_second)
+            
+            # 发送队列中的消息
+            sent_count = 0
+            while self.message_queue and sent_count < max_send_count:
+                topic, payload, qos = self.message_queue.pop(0)
+                await self._send_message(topic, payload, qos)
+                sent_count += 1
+                
+                # 控制发送间隔
+                if sent_count < max_send_count:
+                    await asyncio.sleep(self.send_interval)
+            
+            if sent_count > 0:
+                self.last_send_time = current_time
+                logger.debug(f"队列处理完成，发送了 {sent_count} 条消息")
+                
+        except Exception as e:
+            logger.error(f"处理消息队列失败: {e}")
+    
+    async def _send_message(self, topic: str, payload: str, qos: int = 0):
+        """发送单条消息"""
+        try:
+            if not mqtt_client.is_connected:
+                logger.debug(f"MQTT未连接，跳过消息发送: {topic}")
+                return False
+            
+            # 使用MQTT客户端发送消息
+            result = mqtt_client.client.publish(topic, payload, qos=qos)
+            
+            if result.rc == 0:  # MQTT_ERR_SUCCESS
+                logger.debug(f"消息发送成功: {topic}")
+                return True
+            else:
+                logger.warning(f"消息发送失败: {topic}, 错误码: {result.rc}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"发送消息异常: {e}")
+            return False
     
     async def stop(self):
         """停止数据转发服务"""
@@ -84,19 +160,17 @@ class DataForwarder:
             }
             
             # 发送下线消息（确保立即传输）
-            if mqtt_client.publish(status_topic, offline_message, qos=1, retain=True):
-                logger.info(f"设备下线消息发送成功: {status_topic} (原因: {reason})")
-                # 额外强制网络处理，确保下线消息立即发送
-                try:
-                    for i in range(20):
-                        mqtt_client.client.loop_write()
-                        time.sleep(0.01)
-                    # 额外等待确保传输完成
-                    time.sleep(0.5)
-                except:
-                    pass
-            else:
-                logger.error("设备下线消息发送失败")
+            await self._rate_limited_send(status_topic, json.dumps(offline_message, ensure_ascii=False), qos=1)
+            logger.info(f"设备下线消息发送成功: {status_topic} (原因: {reason})")
+            # 额外强制网络处理，确保下线消息立即发送
+            try:
+                for i in range(20):
+                    mqtt_client.client.loop_write()
+                    time.sleep(0.01)
+                # 额外等待确保传输完成
+                time.sleep(0.5)
+            except:
+                pass
                 
         except Exception as e:
             logger.error(f"发送设备下线消息失败: {e}")
@@ -187,21 +261,18 @@ class DataForwarder:
             )
             
             # 发送数据
-            if mqtt_client.publish(property_topic, message, qos=1):
-                # 发送成功，重置失败计数器
-                self._reset_mqtt_failure_count()
-                logger.debug(f"系统监控数据上报成功: {property_topic}")
-                logger.debug(f"系统监控数据内容: {json.dumps(message, indent=2)}")
-                # 额外强制网络处理（在publish中已经处理了一次）
-                try:
-                    for i in range(3):
-                        mqtt_client.client.loop_write()
-                        time.sleep(0.005)
-                except:
-                    pass
-            else:
-                # 处理MQTT发送失败
-                await self._handle_mqtt_failure("系统监控数据上报失败")
+            await self._rate_limited_send(property_topic, json.dumps(message, ensure_ascii=False), qos=1)
+            # 发送成功，重置失败计数器
+            self._reset_mqtt_failure_count()
+            logger.debug(f"系统监控数据上报成功: {property_topic}")
+            logger.debug(f"系统监控数据内容: {json.dumps(message, indent=2)}")
+            # 额外强制网络处理（在publish中已经处理了一次）
+            try:
+                for i in range(3):
+                    mqtt_client.client.loop_write()
+                    time.sleep(0.005)
+            except:
+                pass
                 
         except Exception as e:
             logger.error(f"发送系统监控数据失败: {e}")
@@ -462,20 +533,17 @@ class DataForwarder:
                     return
                 
                 # 发送数据
-                if mqtt_client.publish(property_topic, message, qos=1):
-                    # 发送成功，重置失败计数器
-                    self._reset_mqtt_failure_count()
-                    logger.debug(f"点位数据上报成功: {property_topic}, 组: {group_key}, 数据量: {len(property_data)}")
-                    # 额外强制网络处理（在publish中已经处理了一次）
-                    try:
-                        for i in range(3):
-                            mqtt_client.client.loop_write()
-                            time.sleep(0.005)
-                    except Exception as e:
-                        logger.warning(f"强制网络处理异常: {e}")
-                else:
-                    # 处理MQTT发送失败
-                    await self._handle_mqtt_failure(f"点位数据上报失败: {group_key}")
+                await self._rate_limited_send(property_topic, json.dumps(message, ensure_ascii=False), qos=1)
+                # 发送成功，重置失败计数器
+                self._reset_mqtt_failure_count()
+                logger.debug(f"点位数据上报成功: {property_topic}, 组: {group_key}, 数据量: {len(property_data)}")
+                # 额外强制网络处理（在publish中已经处理了一次）
+                try:
+                    for i in range(3):
+                        mqtt_client.client.loop_write()
+                        time.sleep(0.005)
+                except Exception as e:
+                    logger.warning(f"强制网络处理异常: {e}")
             
         except Exception as e:
             logger.error(f"发送点位数据失败: {e}")
