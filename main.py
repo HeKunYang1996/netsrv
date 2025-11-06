@@ -20,6 +20,7 @@ from app.core.device_identity import device_identity
 from app.services.data_forwarder import data_forwarder
 from app.services.point_reader import point_reader
 from app.services.point_writer import point_writer
+from app.services.data_caller import data_caller
 from app.api.routes import router
 
 # 设置日志
@@ -74,6 +75,13 @@ async def lifespan(app: FastAPI):
         # 启动数据转发器
         await data_forwarder.start()
         logger.info("数据转发器启动成功")
+        
+        # 设置数据总召主题（需要在 data_forwarder 启动后）
+        if data_caller.setup_topics(data_forwarder):
+            logger.info("数据总召服务启动成功")
+        else:
+            logger.error("数据总召服务启动失败")
+            raise Exception("数据总召服务启动失败")
         
         logger.info("网络服务启动完成")
         startup_success = True

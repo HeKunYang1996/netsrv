@@ -62,13 +62,14 @@ class DataForwarder:
             if current_time - self.last_send_time < self.send_interval:
                 # 添加到队列，稍后发送
                 self.message_queue.append((topic, payload, qos))
-                return
+                logger.debug(f"消息加入队列（限速），队列长度: {len(self.message_queue)}")
+                # 不要直接 return，继续处理队列
+            else:
+                # 直接发送
+                await self._send_message(topic, payload, qos)
+                self.last_send_time = current_time
             
-            # 直接发送
-            await self._send_message(topic, payload, qos)
-            self.last_send_time = current_time
-            
-            # 处理队列中的消息
+            # 处理队列中的消息（无论是否直接发送都要处理队列）
             if self.message_queue:
                 await self._process_message_queue()
                 
@@ -78,26 +79,31 @@ class DataForwarder:
     async def _process_message_queue(self):
         """处理消息队列"""
         try:
+            if not self.message_queue:
+                return
+                
             current_time = time.time()
             
             # 计算可以发送的消息数量
             time_since_last_send = current_time - self.last_send_time
-            max_send_count = int(time_since_last_send * self.max_messages_per_second)
+            # 至少发送一条消息，避免队列堆积
+            max_send_count = max(1, int(time_since_last_send * self.max_messages_per_second))
             
             # 发送队列中的消息
             sent_count = 0
             while self.message_queue and sent_count < max_send_count:
                 topic, payload, qos = self.message_queue.pop(0)
-                await self._send_message(topic, payload, qos)
-                sent_count += 1
                 
                 # 控制发送间隔
-                if sent_count < max_send_count:
+                if sent_count > 0:
                     await asyncio.sleep(self.send_interval)
+                
+                await self._send_message(topic, payload, qos)
+                sent_count += 1
             
             if sent_count > 0:
-                self.last_send_time = current_time
-                logger.debug(f"队列处理完成，发送了 {sent_count} 条消息")
+                self.last_send_time = time.time()
+                logger.debug(f"队列处理完成，发送了 {sent_count} 条消息，剩余队列: {len(self.message_queue)}")
                 
         except Exception as e:
             logger.error(f"处理消息队列失败: {e}")

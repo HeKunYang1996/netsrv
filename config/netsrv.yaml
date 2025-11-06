@@ -80,7 +80,10 @@ mqtt_topics:
   func_reply: "func-reply/{productSN}/{deviceSN}"
   
   # 设备数据总招主题
-  call_data: "call-data"
+  call_data: "call-data/{productSN}/{deviceSN}"
+
+  # 设备数据总招回复主题
+  call_data_reply: "call-data-reply/{productSN}/{deviceSN}"
   
   # 告警广播主题
   alarm: "alarm/{productSN}/{deviceSN}"
@@ -102,7 +105,7 @@ redis_source:
 # 数据上报配置
 data_report:
   # 上报频率
-  interval: 5  # 秒
+  interval: 50  # 秒
   
   # 批量上报数量
   batch_size: 50
